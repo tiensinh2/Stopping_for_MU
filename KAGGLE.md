@@ -73,13 +73,18 @@ for m in ["salun", "tarun", "scrub"]:
 ```
 Sau đó sửa **một lần** `METHOD_HP` trong `config.py`, ghi vào `CHANGES.md`, và giữ nguyên cho mọi seed (§18.5).
 
-## 3. Chạy chính (Track A, §0B.3) — chia việc cho 2 GPU
+## 3. Chạy chính (Track A, §0B.3) — MỘT seed mỗi session
+
+Chạy 3 seed trong một session quá chậm, nên mỗi session chỉ chạy một seed (0, rồi 1, rồi 2). Kết quả cộng dồn trong `OUT`:
+cuối session lưu notebook (Save Version), session sau đặt `RESTORE_FROM="/kaggle/input/<tên-notebook>/ralm_out"`
+(kiểm tra đường dẫn bằng `!ls /kaggle/input`) và đổi `SEED`. Mỗi seed gồm 1 base + 2 retrain + 10 trajectory.
+`aggregate` tự nhận các seed có trong `logs/traj_*_meta.json`. Số job `base` chỉ có 1 nên chỉ dùng 1 trong 2 GPU.
 
 `launch` mở 2 tiến trình, mỗi tiến trình một T4 (`CUDA_VISIBLE_DEVICES`), job chia theo `i % 2`.
 
 ```python
 OUT="/kaggle/working/ralm_out"
-SEEDS="0 1 2"
+SEEDS="0"   # session sau: "1", rồi "2"
 FK="random_rho0.1 random_rho0.01"
 !python -m ralm.run launch base    --gpus 2 --profile kaggle --out $OUT --seeds $SEEDS
 !python -m ralm.run launch retrain --gpus 2 --profile kaggle --out $OUT --seeds $SEEDS --fkeys $FK --retrain_seeds 1
