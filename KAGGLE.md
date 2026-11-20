@@ -2,6 +2,9 @@
 
 Code nằm trong package [`ralm/`](ralm/), test trong [`tests/test_ralm.py`](tests/test_ralm.py). Các điểm khác kịch bản ghi ở [`CHANGES.md`](CHANGES.md).
 
+**Cách nhanh nhất:** mở [`ralm_kaggle.ipynb`](ralm_kaggle.ipynb) trên Kaggle (File → Import Notebook → GitHub URL hoặc upload), chạy từng cell theo thứ tự.
+Notebook làm đúng các bước dưới đây, gồm cả cell tự tính go/no-go sau smoke test. Phần còn lại của file này là giải thích chi tiết từng bước.
+
 **Trạng thái kiểm chứng:** logic đã được kiểm bằng 17 unit test + chạy end-to-end trên **CPU với dữ liệu giả**
 (base → 7 phương pháp → retrain → aggregate → hình). **Chưa chạy trên CIFAR-10 thật hay GPU thật** (máy phát triển chỉ có PyTorch CPU),
 nên mọi con số tốc độ dưới đây là ước lượng, không phải đo đạc.
