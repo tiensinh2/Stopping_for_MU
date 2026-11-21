@@ -1,4 +1,4 @@
-"""Phân tích (kịch bản §9, §12, §15, §18): metric chuẩn hoá theo ν, regret, rollback, R14/R15, tiêu chí thành công.
+﻿"""Phân tích (kịch bản §9, §12, §15, §18): metric chuẩn hoá theo ν, regret, rollback, R14/R15, tiêu chí thành công.
 
 File này là nơi duy nhất ghép luật (rules.py) với oracle (eval_oracle.py). Luật chạy trước, oracle chỉ chấm điểm sau.
 """
@@ -74,11 +74,11 @@ def analyze_run(cfg: Cfg, paths, seed, ftype, method, u=0) -> list[dict]:
     def add(rule, target, res, extra=None):
         k = res["k"]
         row = {"seed": seed, "ftype": ftype, "method": method, "u": u, "rule": rule, "target": target,
-               "k": k, "step": traj[k]["step"], "decided_at_step": traj[res["decided_at"]]["step"],
+               "k": k, "epoch": traj[k]["epoch"], "decided_at_epoch": traj[res["decided_at"]]["epoch"],
                "pick_k0": int(k == 0), "triggered": int(res["triggered"]),
                "no_admissible": int(res["no_admissible"]), "flag_no_util_k_star": int(flag_noutil),
                "d_hat": d_hat[k], "d_hat_k_star": d_hat[k_star], "k_star": k_star,
-               "step_star": traj[k_star]["step"], "regret": d_hat[k] - d_hat[k_star],
+               "epoch_star": traj[k_star]["epoch"], "regret": d_hat[k] - d_hat[k_star],
                "delta0": d_hat[0] - d_hat[k], "g_T": g_T[k], "G_KL": kl[k],
                "auc_gap": abs(auc_k[k] - auc_or), "L_F": traj[k]["L_F"], "A_F": traj[k]["A_F"],
                "L_R": traj[k]["L_R"], "L_V": traj[k]["L_V"], "A_T": A_T[k]}
@@ -93,7 +93,7 @@ def analyze_run(cfg: Cfg, paths, seed, ftype, method, u=0) -> list[dict]:
     rb = {"k": 0, "decided_at": 0, "triggered": True, "no_admissible": False}
     add("R1-rollback", "-", rb, {"d_hat": orc.d_hat(P["loss_F_pre"]), "g_T": orc.g_T(pre["A_T_pre"]),
                                   "regret": orc.d_hat(P["loss_F_pre"]) - d_hat[k_star], "delta0": d_hat[0] - orc.d_hat(P["loss_F_pre"]),
-                                  "step": -1, "k": -1, "pick_k0": 0})
+                                  "epoch": -1, "k": -1, "pick_k0": 0})
     for K in cfg.fixed_k:
         add(f"R2-fixed-{K}", "-", R.r2_fixed(traj, K))
     ctx0 = R.Ctx(R.make_target(P, "none", L_V0), L_R0, L_V0)
@@ -115,7 +115,7 @@ def analyze_run(cfg: Cfg, paths, seed, ftype, method, u=0) -> list[dict]:
     add("R14-oracle-agg-hit", "oracle",
         R.run_online(R.FirstHit(ctx14, lambda sn, c: sn["L_F"] >= c.s, "R14"), traj))
     # đường cong để vẽ / R15
-    curve = {"seed": seed, "ftype": ftype, "method": method, "u": u, "steps": [sn["step"] for sn in traj],
+    curve = {"seed": seed, "ftype": ftype, "method": method, "u": u, "epochs": [sn["epoch"] for sn in traj],
              "d_hat": d_hat.tolist(), "g_T": g_T.tolist(), "k_star": k_star}
     return recs, curve
 
@@ -136,7 +136,7 @@ def add_r15(df: pd.DataFrame, curves: list[dict], cfg: Cfg) -> pd.DataFrame:
             for K in cfg.fixed_k:
                 vals = []
                 for c in others:
-                    st = c["steps"]
+                    st = c["epochs"]
                     i = st.index(K) if K in st else len(st) - 1
                     vals.append(c["d_hat"][i])
                 m = float(np.median(vals))
@@ -155,7 +155,7 @@ def summarize(df: pd.DataFrame) -> pd.DataFrame:
     """Median + IQR theo (ftype, method, rule, target) (§9.6, §15)."""
     g = df.groupby(["ftype", "method", "rule", "target"], sort=False)
     out = g.agg(n=("regret", "size"), regret_med=("regret", "median"), regret_iqr=("regret", _iqr),
-                step_med=("step", "median"), pct_k0=("pick_k0", "mean"), delta0_med=("delta0", "median"),
+                epoch_med=("epoch", "median"), pct_k0=("pick_k0", "mean"), delta0_med=("delta0", "median"),
                 gT_med=("g_T", "median"), gKL_med=("G_KL", "median"), auc_gap_med=("auc_gap", "median"),
                 A_F_med=("A_F", "median"), no_adm=("no_admissible", "mean"),
                 fwd=("fwd_images_per_snapshot", "max")).reset_index()
@@ -293,3 +293,4 @@ def write_report(paths, cfg, gate, summ, crit, rej, st, df):
           "- R11 dùng Err_V khớp histogram lớp của F tại snapshot cuối; R10 chuẩn hoá theo giá trị lớn nhất trên quỹ đạo (offline).",
           "- Mô hình ở chế độ BN=train khi unlearn (ghi rõ theo §6)."]
     (paths.results / "report_auto.md").write_text("\n".join(L), encoding="utf-8")
+

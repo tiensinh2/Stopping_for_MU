@@ -1,4 +1,4 @@
-"""Luật dừng R0-R12 (kịch bản §8, §18.2), cài online: tại snapshot k chỉ đọc snapshot 0..k và P.
+﻿"""Luật dừng R0-R12 (kịch bản §8, §18.2), cài online: tại snapshot k chỉ đọc snapshot 0..k và P.
 
 CÁCH LY (§0.4.1, §0.4.3): file này KHÔNG import eval_oracle, không đọc oracle, không đọc file test niêm phong,
 không đọc checkpoint θ_pre. R14 / R15 (cần oracle) nằm trong analyze.py; R1 (rollback) nằm riêng ở analyze.py.
@@ -154,10 +154,10 @@ def r0_do_nothing(traj) -> dict:
 
 
 def r2_fixed(traj, K: int) -> dict:
-    steps = [sn["step"] for sn in traj]
-    k = steps.index(K) if K in steps else len(traj) - 1      # K vượt quỹ đạo -> snapshot cuối (ghi trong report)
+    eps = [sn["epoch"] for sn in traj]
+    k = eps.index(K) if K in eps else len(traj) - 1          # K vượt quỹ đạo -> epoch cuối (ghi cờ clipped)
     return {"k": int(k), "decided_at": int(k), "triggered": True, "no_admissible": False,
-            "clipped": K not in steps}
+            "clipped": K not in eps}
 
 
 def argmin_global(traj, ctx: Ctx, score) -> dict:
@@ -198,14 +198,15 @@ def load_traj(paths, rid: str) -> list[dict]:
     rows = [json.loads(l) for l in paths.traj_jsonl(rid).read_text(encoding="utf-8").splitlines() if l.strip()]
     z = np.load(paths.traj_arrays(rid))
     n = len(rows)
-    assert len(z["steps"]) == n, f"{rid}: số snapshot jsonl {n} ≠ mảng {len(z['steps'])}"
+    assert len(z["epochs"]) == n, f"{rid}: số snapshot jsonl {n} ≠ mảng {len(z['epochs'])}"
     f_y, v_y = z["f_y"], z["v_y"]
     hist = np.bincount(f_y, minlength=int(max(f_y.max(), v_y.max())) + 1).astype(np.float64)
     w = hist / hist.sum()
     for i, r in enumerate(rows):
-        assert r["step"] == int(z["steps"][i])
+        assert r["epoch"] == int(z["epochs"][i])
         r["loss_F"] = z["loss_F"][i].astype(np.float64)
         pred = z["logits_V"][i].astype(np.float32).argmax(1)
         err_c = np.array([np.mean(pred[v_y == c] != c) if (v_y == c).any() else 0.0 for c in range(len(w))])
         r["err_V_matched"] = float((w * err_c).sum())
     return rows
+

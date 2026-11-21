@@ -11,3 +11,6 @@ lrscan/
 *.pth
 *.npz
 *.npy
+
+# code goc de doi chieu (clone ben ngoai)
+_orig/

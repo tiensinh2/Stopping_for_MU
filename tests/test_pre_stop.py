@@ -1,4 +1,4 @@
-"""Test PRE-stop (kịch bản §14 + Phụ lục A). Chạy: pytest tests/test_pre_stop.py -x -q  (CPU, dữ liệu giả)."""
+﻿"""Test PRE-stop (kịch bản §14 + Phụ lục A). Chạy: pytest tests/test_pre_stop.py -x -q  (CPU, dữ liệu giả)."""
 import json
 import shutil
 
@@ -16,7 +16,7 @@ from pre_stop.eval_oracle import noise_floor
 def _appendix_traj():
     LF = [0.02, 0.10, 0.30, 0.52, 1.10]
     LR = [0.030, 0.031, 0.036, 0.045, 0.400]
-    return [{"step": 10 * k, "L_F": LF[k], "L_R": LR[k], "L_V": 0.30, "A_F": 0.5, "A_V": 0.9,
+    return [{"epoch": k, "L_F": LF[k], "L_R": LR[k], "L_V": 0.30, "A_F": 0.5, "A_V": 0.9,
              "loss_F": np.full(4, LF[k])} for k in range(5)]
 
 
@@ -67,7 +67,7 @@ def test_online_equals_offline_replay():
     rs = np.random.RandomState(0)
     n = 60
     LF = np.cumsum(rs.rand(n) * 0.05) + 0.02
-    tr = [{"step": 10 * k, "L_F": LF[k], "L_R": 0.03 + 0.0005 * k, "L_V": 0.3, "A_F": 0.5, "A_V": 0.9,
+    tr = [{"epoch": k, "L_F": LF[k], "L_R": 0.03 + 0.0005 * k, "L_V": 0.3, "A_F": 0.5, "A_V": 0.9,
            "loss_F": LF[k] + 0.1 * rs.randn(8)} for k in range(n)]
     ctx = R.Ctx(t=np.full(8, 0.9), L_R0=0.03, L_V0=0.3)
     for name, mk in {"R6": lambda: R.FirstHit(ctx, lambda sn, c: sn["L_F"] >= c.s, "R6"),
@@ -142,7 +142,6 @@ def mini_run(tmp_path_factory):
     common = ["--profile", "fake", "--out", out, "--seeds", "0", "--ftypes", "random-450", "--methods", "ga"]
     assert main(["pre"] + common) == 0
     assert main(["cfg"] + common) == 0
-    assert main(["lrscan"] + common) == 0
     assert main(["traj"] + common) == 0
     return out
 
@@ -200,3 +199,73 @@ def test_test_metrics_sealed(mini_run):
     assert "L_T" not in row and "A_T" not in row                          # test nằm file riêng (§7)
     t = json.loads(paths.traj_test(rid).read_text(encoding="utf-8").splitlines()[0])
     assert t["post_selection"] is True
+
+
+
+# ---------------------------------------------------------------- epoch theo code gốc (chỉ thị: đếm theo epoch)
+def _epoch_env(tmp_path_factory_dir):
+    from pre_stop.data import choose_forget, stage_split
+    from ralm.data import Data
+    cfg = get_cfg("fake")
+    data = Data(cfg.as_profile(), torch.device("cpu"))
+    r1, p = stage_split(data, 0)
+    f = choose_forget("random-450", cfg, p, data.ytr_np, 0)
+    return cfg, data, Sets(data, cfg, r1, p, f, "random-450")
+
+
+def _fresh_model(cfg):
+    from ralm.model import make_model
+    return make_model(cfg.as_profile(), torch.device("cpu"))
+
+
+def test_epoch_semantics_match_original_code():
+    """GA: 1 epoch = 1 lượt qua F. FT, NegGrad+, SalUn, SCRUB: đếm theo số batch của loader gốc."""
+    import math
+    from pre_stop import unlearn as U
+    cfg, data, sets = _epoch_env(None)
+    dev = torch.device("cpu")
+    nF, nR = len(sets.f), len(sets.r)
+    exp = {"ga": math.ceil(nF / 256), "ft": math.ceil(nR / 256), "ngplus": math.ceil(nR / 256),
+           "salun": math.ceil(nF / 256) + math.ceil(nR / 256),
+           "scrub": math.ceil(nR / 32)}                      # epoch 1 của SCRUB gốc còn có pha maximize trên F
+    exp["scrub"] += math.ceil(nF / 64)
+    for name, n in exp.items():
+        um = U.METHOD_CLS[name](cfg, data, sets, _fresh_model(cfg), dev)
+        um.epoch()
+        assert um.n_updates == n, (name, um.n_updates, n)
+
+
+def test_scrub_maximize_only_first_msteps_epochs():
+    import math
+    from pre_stop import unlearn as U
+    cfg, data, sets = _epoch_env(None)
+    um = U.Scrub(cfg, data, sets, _fresh_model(cfg), torch.device("cpu"))
+    per = []
+    lrs = []
+    for _ in range(6):
+        before = um.n_updates
+        um.epoch()
+        per.append(um.n_updates - before)
+        lrs.append(um.opt.param_groups[0]["lr"])
+    nr, nf = math.ceil(len(sets.r) / 32), math.ceil(len(sets.f) / 64)
+    assert per == [nr + nf] * 3 + [nr] * 3                   # msteps = 3
+    assert lrs[4] == pytest.approx(5e-4) and lrs[5] == pytest.approx(5e-5)   # gốc: epoch > 5 mới nhân 0.1
+
+
+def test_salun_mask_is_top_half():
+    from pre_stop import unlearn as U
+    cfg, data, sets = _epoch_env(None)
+    um = U.SalUn(cfg, data, sets, _fresh_model(cfg), torch.device("cpu"))
+    tot = sum(v.numel() for v in um.mask.values())
+    on = sum(float(v.sum()) for v in um.mask.values())
+    assert 0.45 <= on / tot <= 0.55
+
+
+def test_epoch_count_and_tarun_two_epochs():
+    from pre_stop.unlearn import applicable, n_epochs_for
+    cfg = get_cfg("fake")
+    assert n_epochs_for(get_cfg("kaggle"), "ga") == 10 and n_epochs_for(cfg, "scrub") == 4
+    assert n_epochs_for(get_cfg("kaggle"), "tarun") == 2
+    assert applicable("tarun", "class-0") and not applicable("tarun", "random-450")
+    assert applicable("ft", "random-450") and not applicable("ft", "class-0")
+

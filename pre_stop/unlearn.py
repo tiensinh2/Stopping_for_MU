@@ -1,9 +1,27 @@
-"""Unlearning ga / ngplus / ft và quỹ đạo (kịch bản §6, §7).
+"""Unlearning ga / ngplus / scrub / salun / tarun / ft, đơn vị là EPOCH, theo code gốc của từng phương pháp.
 
+Nguồn code gốc (đã clone vào _orig/ khi viết file này):
+  ga      OPTML-Group/Unlearn-Saliency  Classification/unlearn/GA.py + impl.py
+          SGD lr 0.01, momentum 0.9, wd 5e-4, batch 256, 10 epoch; mỗi epoch duyệt CHỈ F, loss = -CE, BN train.
+  ngplus  xcadet/deepunlearn munl/unlearning/neggradplus.py
+          SGD lr 0.01, momentum 0.9, wd 0, batch 256, alpha 0.95, 10 epoch; mỗi epoch duyệt zip(R, cycle(F)),
+          loss = alpha*CE_R - (1-alpha)*CE_F, BN eval. (l2_penalty nhân wd=0 nên bỏ.)
+  ft      Unlearn-Saliency FT.py: SGD lr 0.01, momentum 0.9, wd 5e-4, batch 256, 10 epoch trên R, BN train.
+  salun   Unlearn-Saliency generate_mask.py + RL.py (nhánh cifar10): mask = top 50% |grad(-CE_F)| (model.eval),
+          SGD lr 0.013, momentum 0.9, wd 5e-4, batch 256, 10 epoch; mỗi epoch: F với nhãn ngẫu nhiên rồi R,
+          grad nhân mask, tham số ngoài mask trả về giá trị đầu epoch.
+  scrub   meghdadk/SCRUB small_scale_unlearning.ipynb + thirdparty/repdistiller/helper/loops.py:
+          Adam lr 5e-4, wd 0.1, 10 epoch, msteps 3, lr nhân 0.1 sau epoch 5, 8, 9, alpha 0.5, gamma 1, KD T=2,
+          batch R 32 / F 64. Epoch e<=3: maximize (-KL) trên F rồi minimize (gamma*CE + alpha*KL) trên R.
+  tarun   vikram2000b/Fast-Machine-Unlearning (UNSIR) notebook: học noise cho từng lớp cần quên (Adam 0.1, 5x8 bước),
+          epoch 1 = impair (noise + 1000 mẫu R/lớp, Adam 0.02), epoch 2 = repair (1000 mẫu R/lớp, Adam 0.01), batch 256.
+
+Mọi quyết định "epoch" đều lấy từ vòng for epoch trong code gốc. Snapshot lấy ở CUỐI mỗi epoch (và epoch 0).
 CÁCH LY (§0.4.1): file này không import eval_oracle và không đụng tới θ_R2. Metric test ghi vào file niêm phong.
 """
 from __future__ import annotations
 
+import copy
 import json
 import time
 
@@ -14,61 +32,288 @@ import torch.nn.functional as F
 from ralm.eval_core import seed_all
 from ralm.model import make_model
 
-from .config import ALPHA_NG, LR_GRID, LR_SCAN_LV, LR_SCAN_STEPS, Cfg
+from .config import ORIG_EPOCHS, Cfg
 from .data import load_sets
 from .measure import measure, test_metrics
 
 assert "eval_oracle" not in globals(), "unlearn.py không được import eval_oracle (§0.4.1)"
 
-
-class Cycler:
-    """Duyệt tuần hoàn xáo trộn trên idx với batch cố định."""
-
-    def __init__(self, idx: torch.Tensor, bs: int, device):
-        self.idx, self.bs, self.dev = idx, min(bs, len(idx)), device
-        self._new()
-
-    def _new(self):
-        self.perm = self.idx[torch.randperm(len(self.idx), device=self.dev)]
-        self.p = 0
-
-    def next(self) -> torch.Tensor:
-        if self.p + self.bs > len(self.perm):
-            self._new()
-        b = self.perm[self.p:self.p + self.bs]
-        self.p += self.bs
-        return b
+BN_MODE = {"ga": "train", "ft": "train", "salun": "train", "scrub": "train (student), eval (teacher)",
+           "ngplus": "eval", "tarun": "train (noise: eval)"}
 
 
-class Unlearner:
-    def __init__(self, cfg: Cfg, data, sets, model, method: str, lr: float, device):
-        assert method in ("ga", "ngplus", "ft"), method
-        self.cfg, self.data, self.model, self.method, self.dev = cfg, data, model, method, device
-        self.opt = torch.optim.SGD(model.parameters(), lr=lr, momentum=cfg.momentum)   # §6: momentum 0.9
+def n_epochs_for(cfg: Cfg, method: str) -> int:
+    """Số epoch của quỹ đạo. Tarun/UNSIR gốc đúng 2 epoch (impair, repair) và không kéo dài được."""
+    if method == "tarun":
+        return 2
+    return cfg.n_epochs or ORIG_EPOCHS
+
+
+def _batches(idx: torch.Tensor, bs: int) -> list:
+    """Một lượt qua idx đã xáo trộn; batch cuối giữ nguyên (DataLoader drop_last=False)."""
+    perm = idx[torch.randperm(len(idx), device=idx.device)]
+    return [perm[i:i + bs] for i in range(0, len(perm), bs)]
+
+
+class Base:
+    name = ""
+
+    def __init__(self, cfg: Cfg, data, sets, model, device):
+        self.cfg, self.data, self.sets, self.model, self.dev = cfg, data, sets, model, device
         self.use_amp = cfg.amp and device.type == "cuda"
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
-        self.cf = Cycler(sets.f, cfg.batch_f, device)      # batch F = min(64, |F|)
-        self.cr = Cycler(sets.r, cfg.batch_r, device)      # batch R = 128 từ R
+        self.n_updates = 0
+        self.opt = None
 
-    def _ce(self, idx):
-        x, y = self.data.batch(idx, augment=True)
+    def _fwd(self, x):
         with torch.autocast(device_type=self.dev.type, dtype=torch.float16, enabled=self.use_amp):
             out = self.model(x)
-        return F.cross_entropy(out.float(), y)
+        return out.float()
 
-    def step(self) -> float:
-        m = self.method
-        if m == "ga":
-            loss = -self._ce(self.cf.next())
-        elif m == "ngplus":
-            loss = ALPHA_NG * self._ce(self.cr.next()) - (1 - ALPHA_NG) * self._ce(self.cf.next())
-        else:
-            loss = self._ce(self.cr.next())
+    def _ce(self, idx, y=None):
+        x, yy = self.data.batch(idx, augment=True)
+        return F.cross_entropy(self._fwd(x), yy if y is None else y)
+
+    def _update(self, loss, pre=None, post=None):
         self.opt.zero_grad(set_to_none=True)
         self.scaler.scale(loss).backward()
+        if pre is not None:
+            self.scaler.unscale_(self.opt)
+            pre()
         self.scaler.step(self.opt)
         self.scaler.update()
+        if post is not None:
+            post()
+        self.n_updates += 1
         return float(loss.detach())
+
+
+def _sgd(model, lr, wd):
+    return torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=wd)
+
+
+class GA(Base):
+    name = "ga"
+
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.opt = _sgd(self.model, 0.01, 5e-4)
+
+    def epoch(self) -> float:
+        self.model.train()
+        last = 0.0
+        for b in _batches(self.sets.f, 256):                 # CHỈ forget_loader
+            last = self._update(-self._ce(b))
+        return last
+
+
+class FT(Base):
+    name = "ft"
+
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.opt = _sgd(self.model, 0.01, 5e-4)
+
+    def epoch(self) -> float:
+        self.model.train()
+        last = 0.0
+        for b in _batches(self.sets.r, 256):                 # CHỈ retain_loader
+            last = self._update(self._ce(b))
+        return last
+
+
+class NegGradPlus(Base):
+    name = "ngplus"
+    ALPHA = 0.95
+
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.opt = _sgd(self.model, 0.01, 0.0)
+
+    def epoch(self) -> float:
+        self.model.eval()                                    # code gốc: model.eval() trong lúc train
+        fb = [self.data.batch(b, augment=True) for b in _batches(self.sets.f, 256)]   # cycle() lưu bản của lượt đầu
+        last = 0.0
+        for i, rb in enumerate(_batches(self.sets.r, 256)):  # số bước/epoch = số batch của R
+            xr, yr = self.data.batch(rb, augment=True)
+            xf, yf = fb[i % len(fb)]
+            loss = (self.ALPHA * F.cross_entropy(self._fwd(xr), yr)
+                    - (1 - self.ALPHA) * F.cross_entropy(self._fwd(xf), yf))
+            last = self._update(loss)
+        return last
+
+
+class SalUn(Base):
+    name = "salun"
+    THRESHOLD = 0.5
+
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.opt = _sgd(self.model, 0.013, 5e-4)
+        self.mask = self._mask()
+        self.num_classes = self.cfg.num_classes
+
+    def _mask(self) -> dict:
+        m = copy.deepcopy(self.model).eval()
+        g = {n: torch.zeros_like(p) for n, p in m.named_parameters()}
+        for b in _batches(self.sets.f, 256):
+            x, y = self.data.batch(b, augment=True)
+            loss = -F.cross_entropy(m(x).float(), y)
+            m.zero_grad(set_to_none=True)
+            loss.backward()
+            for n, p in m.named_parameters():
+                if p.grad is not None:
+                    g[n] += p.grad
+        flat = torch.cat([v.abs().flatten() for v in g.values()])
+        k = max(1, int(len(flat) * self.THRESHOLD))
+        cut = flat.sort(descending=True).values[k - 1]
+        return {n: (v.abs() >= cut).to(v.dtype) for n, v in g.items()}
+
+    def epoch(self) -> float:
+        self.model.train()
+        theta0 = {n: p.detach().clone() for n, p in self.model.named_parameters() if n in self.mask}
+        params = dict(self.model.named_parameters())
+
+        def pre():
+            for n, p in params.items():
+                if p.grad is not None:
+                    p.grad *= self.mask[n]
+
+        def post():
+            with torch.no_grad():
+                for n, p in params.items():
+                    inv = 1 - self.mask[n]
+                    if torch.count_nonzero(inv) == 0:
+                        continue
+                    p.mul_(self.mask[n]).add_(theta0[n] * inv)
+                    st = self.opt.state.get(p)
+                    if st is not None and "momentum_buffer" in st:
+                        st["momentum_buffer"].mul_(self.mask[n])
+
+        last = 0.0
+        for b in _batches(self.sets.f, 256):                 # F với nhãn ngẫu nhiên
+            y = torch.randint(0, self.num_classes, (len(b),), device=self.dev)
+            last = self._update(self._ce(b, y), pre, post)
+        for b in _batches(self.sets.r, 256):                 # rồi R
+            last = self._update(self._ce(b), pre, post)
+        return last
+
+
+class Scrub(Base):
+    """SCRUB gốc (meghdadk): teacher = θ0 đóng băng, student = bản sao; không có SWA/param_dist ở bản gốc này."""
+    name = "scrub"
+    LR, WD, T = 5e-4, 0.1, 2.0
+    ALPHA, GAMMA = 0.5, 1.0            # beta = 0 trong notebook gốc nên không có số hạng kd
+    MSTEPS = 3
+    DECAY_EPOCHS, DECAY_RATE = (5, 8, 9), 0.1
+    BS_R, BS_F = 32, 64
+
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.teacher = copy.deepcopy(self.model).eval()
+        for p in self.teacher.parameters():
+            p.requires_grad_(False)
+        self.opt = torch.optim.Adam(self.model.parameters(), lr=self.LR, weight_decay=self.WD)
+        self.ep = 0
+
+    def _kl(self, s, t):
+        T = self.T
+        return F.kl_div(F.log_softmax(s / T, 1), F.softmax(t / T, 1), reduction="sum") * (T * T) / s.shape[0]
+
+    def _pair(self, idx):
+        x, y = self.data.batch(idx, augment=False)       # notebook gốc: augment=False
+        s = self._fwd(x)
+        with torch.no_grad():
+            t = self.teacher(x) if not self.use_amp else self._fwd_t(x)
+        return s, t.float(), y
+
+    def _fwd_t(self, x):
+        with torch.autocast(device_type=self.dev.type, dtype=torch.float16, enabled=self.use_amp):
+            return self.teacher(x)
+
+    def epoch(self) -> float:
+        self.ep += 1
+        k = sum(self.ep > e for e in self.DECAY_EPOCHS)           # sgda_adjust_learning_rate
+        if k > 0:
+            for g in self.opt.param_groups:
+                g["lr"] = self.LR * (self.DECAY_RATE ** k)
+        self.model.train()
+        self.teacher.eval()
+        last = 0.0
+        if self.ep <= self.MSTEPS:                                # maximize trên F
+            for b in _batches(self.sets.f, self.BS_F):
+                s, t, _ = self._pair(b)
+                last = self._update(-self._kl(s, t))
+        for b in _batches(self.sets.r, self.BS_R):                # minimize trên R
+            s, t, y = self._pair(b)
+            last = self._update(self.GAMMA * F.cross_entropy(s, y) + self.ALPHA * self._kl(s, t))
+        return last
+
+
+class Tarun(Base):
+    """UNSIR (Tarun et al.) theo notebook gốc. Chỉ định nghĩa cho quên THEO LỚP: classes_to_forget = lớp của F."""
+    name = "tarun"
+    PER_CLASS_RETAIN, NOISE_BS, NOISE_BATCHES, BS = 1000, 256, 20, 256
+
+    def __init__(self, cfg, data, sets, model, device):
+        super().__init__(cfg, data, sets, model, device)
+        self.ep = 0
+        self.classes = sorted(int(c) for c in np.unique(data.ytr_np[sets.f_np]))
+        ytr = data.ytr_np[sets.r_np]
+        take = [sets.r_np[ytr == c][:self.PER_CLASS_RETAIN] for c in range(cfg.num_classes) if c not in self.classes]
+        self.ret = torch.from_numpy(np.concatenate(take)).to(device)
+        assert len(self.ret) > 0, "tarun cần ít nhất một lớp giữ lại"
+        self.noises = self._learn_noise()
+
+    def _learn_noise(self) -> dict:
+        self.model.eval()
+        out = {}
+        for c in self.classes:
+            noise = torch.nn.Parameter(torch.randn(self.NOISE_BS, 3, 32, 32, device=self.dev))
+            opt = torch.optim.Adam([noise], lr=0.1)
+            lab = torch.full((self.NOISE_BS,), c, dtype=torch.long, device=self.dev)
+            for _ in range(5):                                    # num_epochs = 5
+                for _ in range(8):                                # num_steps = 8
+                    loss = (-F.cross_entropy(self.model(noise).float(), lab)
+                            + 0.1 * torch.mean(torch.sum(noise ** 2, [1, 2, 3])))
+                    opt.zero_grad()
+                    loss.backward()
+                    opt.step()
+            self.model.zero_grad(set_to_none=True)
+            out[c] = noise.detach()
+        return out
+
+    def _run(self, x, y, lr):
+        self.opt = torch.optim.Adam(self.model.parameters(), lr=lr)
+        self.model.train()
+        last = 0.0
+        perm = torch.randperm(len(x), device=self.dev)
+        for i in range(0, len(x), self.BS):
+            b = perm[i:i + self.BS]
+            last = self._update(F.cross_entropy(self._fwd(x[b]), y[b]))
+        return last
+
+    def epoch(self) -> float:
+        self.ep += 1
+        xr, yr = self.data.batch(self.ret, augment=False)
+        if self.ep == 1:                                          # impair: noise (nhãn = lớp) + retain, Adam 0.02
+            xn = torch.cat([self.noises[c].repeat(self.NOISE_BATCHES, 1, 1, 1) for c in self.classes])
+            yn = torch.cat([torch.full((self.NOISE_BS * self.NOISE_BATCHES,), c, dtype=torch.long, device=self.dev)
+                            for c in self.classes])
+            return self._run(torch.cat([xn, xr]), torch.cat([yn, yr]), 0.02)
+        return self._run(xr, yr, 0.01)                            # repair: chỉ retain, Adam 0.01
+
+
+METHOD_CLS = {"ga": GA, "ngplus": NegGradPlus, "ft": FT, "salun": SalUn, "scrub": Scrub, "tarun": Tarun}
+TARUN_FTYPES = ("class-0",)       # UNSIR gốc chỉ quên theo lớp: không áp dụng được cho F ngẫu nhiên / hard
+
+
+def applicable(method: str, ftype: str, main_ftype: str = "random-450") -> bool:
+    if method == "tarun":
+        return ftype in TARUN_FTYPES
+    if method == "ft":
+        return ftype == main_ftype
+    return True
 
 
 def _load_theta0(cfg, paths, seed, ftype, device):
@@ -77,59 +322,24 @@ def _load_theta0(cfg, paths, seed, ftype, device):
     return m
 
 
-def scan_lr(cfg: Cfg, paths, data, method: str, seed: int, ftype: str, device, log=print) -> dict:
-    """§6: lr lớn nhất thuộc lưới sao cho L_V(bước 200) <= 1.2·L_V(0). Chỉ dùng V."""
-    sets = load_sets(paths, data, cfg, seed, ftype)
-    n = min(LR_SCAN_STEPS, cfg.n_steps)
-    res, ok_lrs = [], []
-    for lr in sorted(LR_GRID):
-        seed_all(seed)
-        model = _load_theta0(cfg, paths, seed, ftype, device)
-        model.eval()
-        LV0 = float(measure(model, data, cfg, sets.v)[1].double().mean())
-        um = Unlearner(cfg, data, sets, model, method, lr, device)
-        model.train()
-        try:
-            for _ in range(n):
-                um.step()
-            LV = float(measure(model, data, cfg, sets.v)[1].double().mean())
-            ok = bool(np.isfinite(LV) and LV <= LR_SCAN_LV * LV0)
-        except FloatingPointError:
-            LV, ok = float("nan"), False
-        res.append({"lr": lr, "L_V": LV, "L_V0": LV0, "ratio": LV / LV0 if LV0 else None, "ok": ok})
-        log(f"[lr-scan] {method} lr={lr:g}: L_V {LV:.4f} / L_V0 {LV0:.4f} -> {'đạt' if ok else 'không đạt'}")
-        if ok:
-            ok_lrs.append(lr)
-    chosen = max(ok_lrs) if ok_lrs else min(LR_GRID)
-    out = {"method": method, "seed": seed, "ftype": ftype, "steps": n, "chosen_lr": chosen,
-           "none_passed": not ok_lrs, "scan": res}
-    p = paths.lr_json(method)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(out, indent=2), encoding="utf-8")
-    if not ok_lrs:
-        log(f"[lr-scan] CẢNH BÁO {method}: không lr nào đạt tiêu chí; dùng lr nhỏ nhất {chosen:g} và ghi cờ")
-    return out
-
-
 def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u: int = 0,
-            lr: float | None = None, log=print, force: bool = False) -> dict:
+            log=print, force: bool = False) -> dict:
     rid = paths.run_id(method, ftype, seed, u)
     jl, arr_p, meta_p, test_p = paths.traj_jsonl(rid), paths.traj_arrays(rid), paths.meta(rid), paths.traj_test(rid)
     if meta_p.exists() and arr_p.exists() and not force:
         log(f"[traj] {rid} đã xong, bỏ qua")
         return json.loads(meta_p.read_text(encoding="utf-8"))
-    if lr is None:
-        lr = json.loads(paths.lr_json(method).read_text(encoding="utf-8"))["chosen_lr"]
     sets = load_sets(paths, data, cfg, seed, ftype)
     seed_all(seed + 1000 * u)
     model = _load_theta0(cfg, paths, seed, ftype, device)
-    um = Unlearner(cfg, data, sets, model, method, lr, device)
+    um = METHOD_CLS[method](cfg, data, sets, model, device)
+    n_ep = n_epochs_for(cfg, method)
     jl.parent.mkdir(parents=True, exist_ok=True)
     jl.write_text("", encoding="utf-8")
     test_p.write_text("", encoding="utf-8")
-    arrays = {k: [] for k in ("steps", "loss_F", "loss_V", "logits_F", "logits_V")}
+    arrays = {k: [] for k in ("epochs", "loss_F", "loss_V", "logits_F", "logits_V")}
 
-    def snapshot(step: int, t_wall: float, last_loss):
+    def snapshot(ep: int, t_wall: float, last_loss):
         model.eval()
         lgR, lsR = measure(model, data, cfg, sets.rsub)
         lgF, lsF = measure(model, data, cfg, sets.f)
@@ -138,19 +348,19 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
             if not torch.isfinite(t).all():
                 raise FloatingPointError("per-sample loss không hữu hạn (model phân kỳ)")
         acc = lambda lg, idx: float((lg.argmax(1) == data.ytr[idx]).double().mean())    # noqa: E731
-        row = {"run_id": rid, "step": step, "wall_time_s": round(t_wall, 3),
+        row = {"run_id": rid, "epoch": ep, "n_updates": um.n_updates, "wall_time_s": round(t_wall, 3),
                "L_R": float(lsR.double().mean()), "A_R": acc(lgR, sets.rsub),
                "L_F": float(lsF.double().mean()), "A_F": acc(lgF, sets.f),
                "L_V": float(lsV.double().mean()), "A_V": acc(lgV, sets.v),
                "mean_conf_F": float(F.softmax(lgF, 1).max(1).values.double().mean()),
-               "train_loss_last_step": last_loss, "lr": lr}
+               "train_loss_last": last_loss}
         L_T, A_T = test_metrics(model, data, cfg)                         # niêm phong: file riêng (§7)
         with open(jl, "a", encoding="utf-8") as f:
             f.write(json.dumps(row) + "\n"); f.flush()
         with open(test_p, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"run_id": rid, "step": step, "L_T": L_T, "A_T": A_T,
+            f.write(json.dumps({"run_id": rid, "epoch": ep, "L_T": L_T, "A_T": A_T,
                                 "post_selection": True}) + "\n"); f.flush()
-        arrays["steps"].append(step)
+        arrays["epochs"].append(ep)
         arrays["loss_F"].append(lsF.cpu().numpy().astype(np.float32))
         arrays["loss_V"].append(lsV.cpu().numpy().astype(np.float32))
         arrays["logits_F"].append(lgF.cpu().numpy().astype(np.float16))
@@ -159,29 +369,24 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
 
     t0 = time.time()
     snapshot(0, 0.0, None)
-    log(f"[traj] {rid} |F|={len(sets.f)} lr={lr:g}")
-    model.train()
-    last, diverged = None, None
-    for step in range(1, cfg.n_steps + 1):
+    log(f"[traj] {rid} |F|={len(sets.f)} {n_ep} epoch (code gốc: {method}, BN {BN_MODE[method]})")
+    diverged = None
+    for ep in range(1, n_ep + 1):
         try:
-            last = um.step()
-            if step % cfg.interval == 0 or step == cfg.n_steps:
-                row = snapshot(step, time.time() - t0, last)
-                model.train()
-                if step % (cfg.interval * 20) == 0 or step == cfg.n_steps:
-                    log(f"  step {step:5d} L_R {row['L_R']:.4f} L_F {row['L_F']:.4f} L_V {row['L_V']:.4f} "
-                        f"A_F {row['A_F']:.3f} [{time.time() - t0:.0f}s]")
+            last = um.epoch()
+            row = snapshot(ep, time.time() - t0, last)
+            log(f"  epoch {ep:2d} L_R {row['L_R']:.4f} L_F {row['L_F']:.4f} L_V {row['L_V']:.4f} "
+                f"A_F {row['A_F']:.3f} upd {um.n_updates} [{time.time() - t0:.0f}s]")
         except FloatingPointError as e:     # ghi rõ, không bỏ qua im lặng (§17.3)
-            diverged = {"step": step, "error": str(e)}
-            log(f"[traj] {rid} PHÂN KỲ tại bước {step}: quỹ đạo bị cắt ở đây (ghi cờ diverged)")
+            diverged = {"epoch": ep, "error": str(e)}
+            log(f"[traj] {rid} PHÂN KỲ ở epoch {ep}: quỹ đạo bị cắt ở đây (ghi cờ diverged)")
             break
-    np.savez_compressed(arr_p, steps=np.array(arrays["steps"]), loss_F=np.stack(arrays["loss_F"]),
+    np.savez_compressed(arr_p, epochs=np.array(arrays["epochs"]), loss_F=np.stack(arrays["loss_F"]),
                         loss_V=np.stack(arrays["loss_V"]), logits_F=np.stack(arrays["logits_F"]),
                         logits_V=np.stack(arrays["logits_V"]), f_idx=sets.f_np, v_idx=sets.v_np,
                         f_y=data.ytr_np[sets.f_np], v_y=data.ytr_np[sets.v_np])
-    meta = {"run_id": rid, "method": method, "ftype": ftype, "seed": seed, "u": u, "lr": lr,
-            "n_steps": cfg.n_steps, "interval": cfg.interval, "n_snapshots": len(arrays["steps"]),
-            "diverged": diverged, "wall_s": time.time() - t0, "arrays": arr_p.name,
-            "bn_mode": "train (BN theo batch)"}
+    meta = {"run_id": rid, "method": method, "ftype": ftype, "seed": seed, "u": u, "n_epochs": n_ep,
+            "n_snapshots": len(arrays["epochs"]), "n_updates": um.n_updates, "diverged": diverged,
+            "wall_s": time.time() - t0, "arrays": arr_p.name, "bn_mode": BN_MODE[method]}
     meta_p.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta

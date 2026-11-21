@@ -13,10 +13,7 @@ PHI = 0.1                     # §2.3: replay R1 mỗi epoch của giai đoạn 
 GATE_F = 0.2                  # §2.3: L_F(θ0) <= 0.2 * L_F^pre
 WF_ORDER = (1, 5, 10)         # §2.3: thứ tự w_F thử
 M_ORACLE = 3                  # §2.4
-ALPHA_NG = 0.95               # §6: ngplus
-LR_GRID = (1e-4, 3e-4, 1e-3)  # §6
-LR_SCAN_STEPS = 200
-LR_SCAN_LV = 1.2
+ORIG_EPOCHS = 10              # số epoch mặc định của code gốc (GA, NegGrad+, FT, SalUn, SCRUB)
 LAMBDA_R = 1.0                # §8.2 [FIXED]
 P_HIT = 3                     # §8.1: kiên nhẫn cho luật first-hit
 Q_ARGMIN = 10                 # §8.1: kiên nhẫn cho luật argmin
@@ -25,7 +22,7 @@ GV_MULT = 1.10                # §8.1 rào G_V
 UTIL_GATE_PTS = 1.0           # §9.3: g_T <= 1.0 điểm để chọn k*
 GATE1_RATIO = 10.0            # §10: median e_pre/nu > 10 -> dừng
 FTYPES = ("random-450", "random-1350", "class-0", "hard-450")
-METHODS = ("ga", "ngplus", "ft")
+METHODS = ("ga", "ngplus", "scrub", "salun", "tarun", "ft")
 MAIN_FTYPE = "random-450"
 
 
@@ -56,12 +53,9 @@ class Cfg:
     f_small: int = 450
     f_large: int = 1350
     rsub_n: int = 5000
-    # unlearning (§6)
-    n_steps: int = 2000
-    interval: int = 10
-    batch_f: int = 64
-    batch_r: int = 128
-    fixed_k: tuple = (50, 100, 200, 500, 1000, 2000)
+    # unlearning: đơn vị là EPOCH, theo định nghĩa của code gốc từng phương pháp (xem unlearn.py)
+    n_epochs: int | None = None      # None = số epoch gốc của từng phương pháp (ORIG_EPOCHS; tarun = 2)
+    fixed_k: tuple = (1, 2, 3, 5, 10)   # R2-fixed: dừng ở epoch K
 
     def as_profile(self) -> _BaseProfile:
         """Profile của ralm chỉ để dùng lại Data / make_model."""
@@ -78,7 +72,7 @@ PROFILES: dict[str, Cfg] = {
     "fake": Cfg(name="fake", e1=20, warm1=1, lr1=0.05, lr2=0.03, min_pre_acc=None, e2=12, batch=64, width=8,
                 amp=False,
                 eval_batch=512, v_size=150, fake_train=1500, fake_test=300, f_small=20, f_large=60,
-                rsub_n=200, n_steps=40, interval=5, batch_f=16, batch_r=32, fixed_k=(10, 20, 40)),
+                rsub_n=200, n_epochs=4, fixed_k=(1, 2, 4)),
 }
 
 
@@ -102,7 +96,6 @@ class Paths:
     def theta0(self, s, ft): return self._p("ckpt", "theta0", f"{ft}_seed{s}.pth")
     def stage2_stats(self, s, ft): return self._p("data", f"stage2_{ft}_seed{s}.json")
     def oracle(self, s, ft, m): return self._p("oracle", f"{ft}_seed{s}_m{m}.npz")
-    def lr_json(self, method): return self._p("data", f"lr_{method}.json")
     def run_id(self, method, ft, s, u=0): return f"{method}_{ft}_seed{s}_u{u}"
     def traj_jsonl(self, rid): return self._p("logs", f"traj_{rid}.jsonl")
     def traj_arrays(self, rid): return self._p("logs", f"traj_{rid}_arrays.npz")

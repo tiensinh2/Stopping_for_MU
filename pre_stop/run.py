@@ -1,4 +1,4 @@
-"""CLI: python -m pre_stop.run <lệnh> --profile kaggle --out <thư mục> --seeds 0 1 2 ..."""
+﻿"""CLI: python -m pre_stop.run <lệnh> --profile kaggle --out <thư mục> --seeds 0 1 2 ..."""
 from __future__ import annotations
 
 import argparse
@@ -13,12 +13,12 @@ from ralm.data import Data
 from . import analyze as A
 from .config import FTYPES, MAIN_FTYPE, METHODS, GATE1_RATIO, Paths, get_cfg
 from .train import prepare_config, prepare_seed
-from .unlearn import collect, scan_lr
+from .unlearn import applicable, collect
 
 
 def _args(argv=None):
     p = argparse.ArgumentParser()
-    p.add_argument("cmd", choices=["pre", "cfg", "gate1", "lrscan", "traj", "analyze", "all"])
+    p.add_argument("cmd", choices=["pre", "cfg", "gate1", "traj", "analyze", "all"])
     p.add_argument("--profile", default="kaggle")
     p.add_argument("--out", default="./pre_out")
     p.add_argument("--data_root", default=None)
@@ -27,15 +27,14 @@ def _args(argv=None):
     p.add_argument("--methods", nargs="+", default=list(METHODS))
     p.add_argument("--us", type=int, nargs="+", default=[0])
     p.add_argument("--e2", type=int, default=None)
-    p.add_argument("--n_steps", type=int, default=None)
+    p.add_argument("--n_epochs", type=int, default=None, help="số epoch unlearning (mặc định: số epoch của code gốc)")
     p.add_argument("--force", action="store_true")
-    p.add_argument("--lrscan_seed", type=int, default=None, help="seed dùng để quét lr (mặc định seed đầu tiên)")
     return p.parse_args(argv)
 
 
 def main(argv=None):
     a = _args(argv)
-    cfg = get_cfg(a.profile, e2=a.e2, n_steps=a.n_steps, data_root=a.data_root)
+    cfg = get_cfg(a.profile, e2=a.e2, n_epochs=a.n_epochs, data_root=a.data_root)
     paths = Paths(a.out)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[run] {a.cmd} profile={cfg.name} device={device} seeds={a.seeds} ftypes={a.ftypes} methods={a.methods}")
@@ -53,17 +52,13 @@ def main(argv=None):
         if not ok:      # chỉ cảnh báo, không chặn: kết quả vẫn chạy và được báo cáo cùng e_pre/ν
             print("[CẢNH BÁO] median e_pre/ν > 10 ở random-450: tiền đề 'loss trước khi học F ≈ loss oracle' "
                   "không đứng vững. Vẫn chạy tiếp; xem results/gate1.csv và đọc kết quả luật trong ngữ cảnh này.")
-    if a.cmd in ("lrscan", "all"):
-        s0 = a.lrscan_seed if a.lrscan_seed is not None else a.seeds[0]
-        for me in a.methods:
-            if not paths.lr_json(me).exists() or a.force:
-                scan_lr(cfg, paths, data, me, s0, MAIN_FTYPE if MAIN_FTYPE in a.ftypes else a.ftypes[0], device)
     if a.cmd in ("traj", "all"):
         for s in a.seeds:
             for ft in a.ftypes:
                 for me in a.methods:
-                    if me == "ft" and ft != MAIN_FTYPE:
-                        continue                       # §10: ft chỉ làm đối chứng trên random-450
+                    if not applicable(me, ft, MAIN_FTYPE):
+                        print(f"[traj] bỏ qua {me}/{ft}: phương pháp gốc không định nghĩa cho loại F này")
+                        continue
                     for u in a.us:
                         collect(cfg, paths, data, me, ft, s, device, u=u, force=a.force)
     if a.cmd in ("analyze", "all"):
@@ -100,3 +95,4 @@ def gate1(cfg, paths, data, a, device) -> bool:
 
 if __name__ == "__main__":
     sys.exit(main())
+

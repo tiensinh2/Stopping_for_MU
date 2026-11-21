@@ -1,3 +1,6 @@
+> **Lưu ý:** tài liệu này chỉ dành cho pipeline `ralm/` cũ (đếm theo bước, giữ nguyên để đối chiếu).
+> Thí nghiệm PRE-stop hiện hành dùng `pre_stop/`, **đếm theo epoch, đúng code gốc**: xem `PRE_STOP.md` và `pre_stop_kaggle.ipynb`.
+
 # Chạy thí nghiệm RALM trên Kaggle (GPU T4 ×2)
 
 Code nằm trong package [`ralm/`](ralm/), test trong [`tests/test_ralm.py`](tests/test_ralm.py). Các điểm khác kịch bản ghi ở [`CHANGES.md`](CHANGES.md).
