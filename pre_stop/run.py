@@ -50,9 +50,9 @@ def main(argv=None):
                 prepare_config(cfg, paths, data, s, ft, device, force=a.force)
     if a.cmd in ("gate1", "all"):
         ok = gate1(cfg, paths, data, a, device)
-        if not ok:
-            print("[GATE 1] tiền đề không đứng vững (§10): DỪNG, không chạy unlearning. Xem results/gate1.csv")
-            return 2
+        if not ok:      # chỉ cảnh báo, không chặn: kết quả vẫn chạy và được báo cáo cùng e_pre/ν
+            print("[CẢNH BÁO] median e_pre/ν > 10 ở random-450: tiền đề 'loss trước khi học F ≈ loss oracle' "
+                  "không đứng vững. Vẫn chạy tiếp; xem results/gate1.csv và đọc kết quả luật trong ngữ cảnh này.")
     if a.cmd in ("lrscan", "all"):
         s0 = a.lrscan_seed if a.lrscan_seed is not None else a.seeds[0]
         for me in a.methods:

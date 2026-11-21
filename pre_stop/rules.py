@@ -160,6 +160,13 @@ def r2_fixed(traj, K: int) -> dict:
             "clipped": K not in steps}
 
 
+def argmin_global(traj, ctx: Ctx, score) -> dict:
+    """Tối ưu thuần của hàm: argmin_k score trên TOÀN quỹ đạo, không rào chắn, không patience (offline).
+    Đây là 'chạy lấy tối ưu của J'; R7/R8 online có thêm rào utility và dừng sau q snapshot không cải thiện."""
+    j = np.array([score(sn, ctx) for sn in traj])
+    return {"k": int(np.argmin(j)), "decided_at": len(traj) - 1, "triggered": True, "no_admissible": False}
+
+
 def r10_pareto_knee(traj, ctx: Ctx) -> dict:
     LV0 = traj[0]["L_V"]
     LF0 = traj[0]["L_F"]

@@ -14,7 +14,9 @@ from .config import FTYPES, MAIN_FTYPE, P_HIT, GATE1_RATIO, Cfg
 from .eval_oracle import Oracle, auc_conf, conf_of, oracle_checkpoint
 from .pre_info import load_P
 
-PRE_RULES = ("R6-PRE-hit", "R7-PRE-J", "R8-PRE-sample", "R9-PRE-median-hit")
+PRE_ONLINE = ("R6-PRE-hit", "R7-PRE-J", "R8-PRE-sample", "R9-PRE-median-hit")
+PRE_GLOBAL = ("R7g-PRE-J-global", "R8g-PRE-sample-global")      # argmin thuần trên toàn quỹ đạo, offline
+PRE_RULES = PRE_ONLINE + PRE_GLOBAL
 FWD = {  # số ảnh phải forward thêm mỗi snapshot khi chạy online (R_sub=5000, V=5000, |F| tuỳ cấu hình)
     "R3-retain-only": "R", "R4-val-only": "V", "R5-heldout-hit": "FV", "R6-PRE-hit": "FR", "R7-PRE-J": "FR",
     "R8-PRE-sample": "FR", "R9-PRE-median-hit": "FR", "R12-acc-hit": "FV"}
@@ -104,8 +106,10 @@ def analyze_run(cfg: Cfg, paths, seed, ftype, method, u=0) -> list[dict]:
     for mode in ("none", "V", "log"):
         ctx = R.Ctx(R.make_target(P, mode, L_V0), L_R0, L_V0)
         for name, rule in R.online_rules(ctx).items():
-            if name in PRE_RULES:
+            if name in PRE_ONLINE:
                 add(name, mode, R.run_online(rule, traj))
+        add("R7g-PRE-J-global", mode, R.argmin_global(traj, ctx, R.J7))
+        add("R8g-PRE-sample-global", mode, R.argmin_global(traj, ctx, R.J8))
     # R14 (oracle-aggregate-hit): trần của luật đích tổng hợp; chỉ để đo
     ctx14 = R.Ctx(np.full(nF, float(orc.L_F.mean())), L_R0, L_V0)
     add("R14-oracle-agg-hit", "oracle",

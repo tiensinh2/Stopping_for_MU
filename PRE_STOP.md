@@ -14,6 +14,9 @@ Notebook: `pre_stop_kaggle.ipynb`. Kiểm thử: `pytest tests/test_pre_stop.py`
 
 ## Đã cài (theo kịch bản)
 - R0, R1 (rollback, tách riêng), R2-K, R3, R4, R5, R6-R9 (x 2 đích `none`, `V`), R10, R11, R12, R14, R15.
+- **R7g, R8g (thêm theo yêu cầu, không có trong kịch bản):** `argmin_k J(k)` thuần trên toàn quỹ đạo, offline, không rào utility, không patience. R7/R8 vẫn là bản online theo §8.
+- **Cổng 1 chỉ cảnh báo, không chặn pipeline** (kịch bản §10 yêu cầu dừng khi median e_pre/nu > 10; đã bỏ theo yêu cầu "cứ chạy rồi báo cáo"). Cổng theta_pre >= 90% vẫn chặn.
+- Snapshot mỗi 10 bước unlearning (không theo epoch): 201 snapshot/quỹ đạo. Mỗi snapshot đo R_sub, F, V và cả test (file niêm phong).
 - Rào utility G_R, G_V; dự phòng "chấp nhận được cuối cùng" rồi k=0 kèm cờ `no_admissible`.
 - P đóng băng (hash + dấu thời gian) trước giai đoạn 2; test kiểm tra thứ tự thời gian và hash.
 - Metric mục 9: d_hat, regret, Delta0, g_T, e_pre, e_pre,agg, e_R, G_KL, AUC proxy; median + IQR; kiểm định dấu.
