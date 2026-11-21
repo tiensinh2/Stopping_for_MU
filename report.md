@@ -90,7 +90,7 @@ Oracle: `k* = argmin_k G_logit_F(k)` với `G_logit_F = mean_{x∈F} KL(p_θR �
 | Giai đoạn | Cấu hình | Số job |
 |---|---|---|
 | Smoke (mục 1) | seed 0 · `random_rho0.01` · `ga ngp scrub` | 1 base + 1 retrain + 3 trajectory |
-| Chính (mục 3) | **1 seed mỗi session** (0, rồi 1, rồi 2; cộng dồn qua `RESTORE_FROM`) · `random_rho0.1`, `random_rho0.01` · `ga ngp scrub salun tarun` | mỗi seed: 1 base + 2 retrain + 10 trajectory (3 seed: 3 + 6 + 30) |
+| Chính (mục 3) | seeds **0,1,2 trong một session** (có thể tách từng seed qua `RESTORE_FROM`) · `random_rho0.1`, `random_rho0.01` · `ga ngp scrub salun tarun` | 3 base + 6 retrain + **30** trajectory (seed 0 đo thật ≈ 70 phút; 3 seed chưa đo) |
 
 - `RETRAIN_SEEDS = 1` (kịch bản §9 cho tới 5): với n=1 không có trung vị qua seed retrain.
 - Job chia cho 2 GPU T4 theo `i % 2` (mỗi GPU một tiến trình). Mọi job idempotent, bỏ qua nếu đã có kết quả.

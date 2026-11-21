@@ -73,18 +73,17 @@ for m in ["salun", "tarun", "scrub"]:
 ```
 Sau đó sửa **một lần** `METHOD_HP` trong `config.py`, ghi vào `CHANGES.md`, và giữ nguyên cho mọi seed (§18.5).
 
-## 3. Chạy chính (Track A, §0B.3) — MỘT seed mỗi session
+## 3. Chạy chính (Track A, §0B.3) — cả 3 seed trong một session
 
-Chạy 3 seed trong một session quá chậm, nên mỗi session chỉ chạy một seed (0, rồi 1, rồi 2). Kết quả cộng dồn trong `OUT`:
-cuối session lưu notebook (Save Version), session sau đặt `RESTORE_FROM="/kaggle/input/<tên-notebook>/ralm_out"`
-(kiểm tra đường dẫn bằng `!ls /kaggle/input`) và đổi `SEED`. Mỗi seed gồm 1 base + 2 retrain + 10 trajectory.
-`aggregate` tự nhận các seed có trong `logs/traj_*_meta.json`. Số job `base` chỉ có 1 nên chỉ dùng 1 trong 2 GPU.
+Seed 0 đo thật khoảng 70 phút (base ≈ 22 phút, retrain ≈ 21 phút, mỗi trajectory ≈ 4–4,5 phút), nên 3 seed chia 2 GPU ước tính ≈ 3 giờ
+(chưa đo cho 3 seed). Nếu session ngắn, có thể chạy từng seed: `SEEDS="0"`, rồi `"1"`, `"2"` ở session sau, đặt
+`RESTORE_FROM="/kaggle/input/<tên-notebook>/ralm_out"` (kiểm tra bằng `!ls /kaggle/input`). `aggregate` tự nhận các seed có trong `logs/traj_*_meta.json`.
 
 `launch` mở 2 tiến trình, mỗi tiến trình một T4 (`CUDA_VISIBLE_DEVICES`), job chia theo `i % 2`.
 
 ```python
 OUT="/kaggle/working/ralm_out"
-SEEDS="0"   # session sau: "1", rồi "2"
+SEEDS="0 1 2"
 FK="random_rho0.1 random_rho0.01"
 !python -m ralm.run launch base    --gpus 2 --profile kaggle --out $OUT --seeds $SEEDS
 !python -m ralm.run launch retrain --gpus 2 --profile kaggle --out $OUT --seeds $SEEDS --fkeys $FK --retrain_seeds 1
@@ -96,14 +95,14 @@ Mở rộng (Track B / stage I): thêm `random_rho0.001 highloss_rho0.01 memoriz
 (highloss/memorized phụ thuộc θ0 từng seed nên cần `base` xong trước). Thêm `rl ft` vào `--methods` nếu muốn đối chứng.
 `--profile paper` = snapshot mỗi 10 bước, 2000 bước (đúng stage I, tốn ~2.5× eval). `--delta_f` bật cổng δ_F, `--ema 0.9` bật EMA.
 
-### Ước lượng thời gian (chưa đo — hãy đo lần đầu rồi chỉnh)
-| Việc | Số job (Track A) | Ước tính/job (T4, AMP) |
+### Thời gian (đo ở seed 0, T4, AMP)
+| Việc | Số job (3 seed) | Thời gian/job đã đo |
 |---|---|---|
-| base θ0 | 3 | 100 epoch ResNet-18, ~0.5–1 h |
-| retrain θ_R | 6 | như trên |
-| trajectory | 30 | 1000 bước + 40 snapshot × (forward 50k+10k ảnh) ≈ vài phút |
+| base θ0 | 3 | ≈ 22 phút |
+| retrain θ_R | 6 | ≈ 20–22 phút |
+| trajectory | 30 | ≈ 4–4,5 phút |
 
-Tổng cỡ 6–10 giờ GPU, chia 2 GPU ≈ 3–5 giờ thực, nằm trong giới hạn 12 giờ/session; vì idempotent nên có thể tách nhiều session.
+Tổng ≈ 3 giờ thực khi chia 2 GPU (ước tính từ số đo trên, chưa đo cả 3 seed); chưa tính tải CIFAR-10 (từng mất ≈ 25 phút). Vì idempotent nên có thể tách nhiều session.
 Nếu OOM: giảm `eval_batch` trong profile (§1.6: không đổi lr/batch của recipe).
 
 ## 4. Đầu ra (`$OUT/results/`)

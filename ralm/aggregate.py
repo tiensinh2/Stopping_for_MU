@@ -61,15 +61,28 @@ def analyze_run(profile: Profile, paths: Paths, rid: str, fkey: str, base_seed: 
     band = S.band_mask(sc, BAND_EPS_D, BAND_EPS_V, 0)
     k_star = int(steps[np.argmin(G)])
     rows = []
+    t_logits, t_y = full["tlogits"], full["t_y"]
+    # tham chiếu retrain (trung vị qua retrain seed) cho các chỉ số chất lượng unlearn
+    rmeta = [rt["meta"] for rt in retrains]
+    ref = {k: float(np.median([m[k] for m in rmeta])) for k in ("A_R", "A_F", "A_V", "A_T")}
+    f_idx_ = arr["f_idx"] if "f_idx" in arr else full["f_idx"]
+    ref["MIA"] = float(np.median([mia_auc(rt["train_logits"][f_idx_], arr["f_y"], rt["test_logits"], t_y)
+                                  for rt in retrains]))
     for rule, v in sel.items():
         r = O.regret(G, steps, v["k"])
         i = int(np.argmin(np.abs(steps - v["k"])))
+        q = {"A_R": traj[i]["A_R"], "A_F": traj[i]["A_F"], "A_V": traj[i]["A_V"], "A_T": float(cur["A_T_k"][i]),
+             "MIA": mia_auc(arr["flogits"][i], arr["f_y"], t_logits[i], t_y)}
+        gaps = {f"gap_{k}": abs(q[k] - ref[k]) for k in ("A_R", "A_F", "A_T", "MIA")}
         rows.append({"run_id": rid, "method": meta["method"], "fkey": fkey, "seed": base_seed, "rho": meta["rho"],
                      "rule": rule, "k_hat": v["k"], "online_fwd_per_snap": v["fwd"],
                      "at_kmin": int(v["k"] == int(steps[steps >= k_min][0]) if (steps >= k_min).any() else 0),
                      "G_F_at_k": float(cur["G_F"][i]), "G_test_acc": float(cur["G_test_acc"][i]),
-                     "G_logit_V": float(cur["G_logit_V"][i]), "A_T": float(cur["A_T_k"][i]),
-                     "A_T_retrain": cur["A_T_retrain"], **r})
+                     "G_logit_V": float(cur["G_logit_V"][i]), "A_T": q["A_T"],
+                     "A_T_retrain": cur["A_T_retrain"],
+                     "A_R": q["A_R"], "A_F": q["A_F"], "A_V": q["A_V"], "MIA": q["MIA"],
+                     "A_R_retrain": ref["A_R"], "A_F_retrain": ref["A_F"], "MIA_retrain": ref["MIA"],
+                     **gaps, "avg_gap": float(np.mean(list(gaps.values()))), **r})
     # --- T-series (re-analysis, không chạy thêm GPU)
     arows = []
     base_k = {}
@@ -99,7 +112,6 @@ def analyze_run(profile: Profile, paths: Paths, rid: str, fkey: str, base_seed: 
                  "G_out_var": float(out_b.var()) if out_b.size else float("nan")}
     # --- privacy proxy tại k̂ của ralm-dv / retain-only / fixed-last / retrain
     priv = {}
-    t_logits, t_y = full["tlogits"], full["t_y"]
     for rule in ("ralm-dv", "retain-only", "fixed-last"):
         i = int(np.argmin(np.abs(steps - sel[rule]["k"])))
         priv[rule] = mia_auc(arr["flogits"][i], arr["f_y"], t_logits[i], t_y)
@@ -142,6 +154,19 @@ def summarize(paths: Paths, tag: str, runs: list[dict]) -> dict:
     # gộp random-k0..4 thành 1 luật "random-k" (mỗi mẫu = 1 seed k)
     rd = rules_df.copy()
     rd["rule"] = rd["rule"].str.replace(r"random-k\d", "random-k", regex=True)
+    # bảng chất lượng unlearn tại k̂ (median qua run): accuracy F/R/test, MIA, khoảng cách tới retrain
+    qm = ["### Chất lượng mô hình tại k̂ — median qua run (gap = |giá trị − retrain|; avg_gap = trung bình 4 gap; nhỏ hơn tốt hơn)"]
+    for (m, f), g in rd.groupby(["method", "fkey"]):
+        h0 = g.iloc[0]
+        qm.append(f"\n#### {m} / {f}  (n_runs={g.run_id.nunique()})\n")
+        qm.append(f"Retrain: A_F={h0.A_F_retrain:.4f} A_R={h0.A_R_retrain:.4f} A_T={h0.A_T_retrain:.4f} MIA={h0.MIA_retrain:.3f}\n")
+        qm.append("| Rule | k̂ | A_F | A_R | A_T | MIA | gap A_F | gap A_R | gap A_T | gap MIA | avg_gap |")
+        qm.append("|---|---|---|---|---|---|---|---|---|---|---|")
+        for rule, h in g.groupby("rule", sort=False):
+            qm.append(f"| {rule} | {h.k_hat.median():.0f} | {h.A_F.median():.4f} | {h.A_R.median():.4f} | "
+                      f"{h.A_T.median():.4f} | {h.MIA.median():.3f} | {h.gap_A_F.median():.4f} | {h.gap_A_R.median():.4f} | "
+                      f"{h.gap_A_T.median():.4f} | {h.gap_MIA.median():.3f} | {h.avg_gap.median():.4f} |")
+    (paths.results / f"quality_table_{tag}.md").write_text("\n".join(qm), encoding="utf-8")
     for (m, f), g in rd.groupby(["method", "fkey"]):
         md.append(f"\n### {m} / {f}  (n_runs={g.run_id.nunique()})\n")
         md.append("| Rule | median regret | IQR | median regret_rel | median k̂ | % k̂=k_min | online fwd/snap | median |A_T−A_T(θR)| |")
