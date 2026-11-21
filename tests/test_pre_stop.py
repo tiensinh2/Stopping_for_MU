@@ -1,0 +1,202 @@
+"""Test PRE-stop (kịch bản §14 + Phụ lục A). Chạy: pytest tests/test_pre_stop.py -x -q  (CPU, dữ liệu giả)."""
+import json
+import shutil
+
+import numpy as np
+import pytest
+import torch
+
+from pre_stop import rules as R
+from pre_stop.config import M_ORACLE, Paths, get_cfg
+from pre_stop.data import Sets
+from pre_stop.eval_oracle import noise_floor
+
+
+# ---------------------------------------------------------------- Phụ lục A (test 3 §14)
+def _appendix_traj():
+    LF = [0.02, 0.10, 0.30, 0.52, 1.10]
+    LR = [0.030, 0.031, 0.036, 0.045, 0.400]
+    return [{"step": 10 * k, "L_F": LF[k], "L_R": LR[k], "L_V": 0.30, "A_F": 0.5, "A_V": 0.9,
+             "loss_F": np.full(4, LF[k])} for k in range(5)]
+
+
+def _ctx(**kw):
+    return R.Ctx(t=np.full(4, 0.45), L_R0=0.03, L_V0=0.30, **kw)
+
+
+def test_appendix_A_scores_four_digits():
+    ctx, tr = _ctx(), _appendix_traj()
+    assert ctx.s == pytest.approx(0.45)
+    exp = [(0.9556, 0.0000, 0.9556), (0.7778, 0.0022, 0.7800), (0.3333, 0.0133, 0.3467),
+           (0.1556, 0.0333, 0.1889), (1.4444, 0.8222, 2.2667)]
+    for sn, (dF, dR, J) in zip(tr, exp):
+        assert round(R.delta_F(sn, ctx), 4) == dF
+        assert round(R.delta_R(sn, ctx), 4) == dR
+        assert round(R.J7(sn, ctx), 4) == J
+
+
+def test_appendix_A_barrier_and_choices():
+    ctx, tr = _ctx(), _appendix_traj()
+    assert [ctx.admissible(sn) for sn in tr] == [True, True, True, True, False]       # ngưỡng 0.05
+    assert R.run_online(R.ArgMin(ctx, R.J7, "R7"), tr)["k"] == 3                       # R7 chọn k=3
+    ctx1 = _ctx(p=1)                                                                    # R6 với p=1
+    assert R.run_online(R.FirstHit(ctx1, lambda sn, c: sn["L_F"] >= c.s, "R6"), tr)["k"] == 3
+    tr[3]["L_R"] = 0.06                                                                 # k=3 bị rào chắn loại
+    out = R.run_online(R.FirstHit(ctx1, lambda sn, c: sn["L_F"] >= c.s, "R6"), tr)
+    assert out["triggered"] is False and out["k"] == 2 and out["no_admissible"] is False
+
+
+def test_first_hit_needs_p_consecutive():
+    ctx = _ctx(p=3)
+    tr = _appendix_traj()
+    out = R.run_online(R.FirstHit(ctx, lambda sn, c: sn["L_F"] >= c.s, "R6"), tr)
+    assert out["triggered"] is False                      # chỉ 1 snapshot chấp nhận được có L_F >= s
+    assert out["k"] == 3
+
+
+def test_no_admissible_flag():
+    tr = _appendix_traj()
+    for sn in tr:
+        sn["L_V"] = 9.0
+    out = R.run_online(R.ArgMin(_ctx(), R.J7, "R7"), tr)
+    assert out["k"] == 0 and out["no_admissible"] is True
+
+
+# ---------------------------------------------------------------- test 1: online == offline (không nhìn trước)
+def test_online_equals_offline_replay():
+    rs = np.random.RandomState(0)
+    n = 60
+    LF = np.cumsum(rs.rand(n) * 0.05) + 0.02
+    tr = [{"step": 10 * k, "L_F": LF[k], "L_R": 0.03 + 0.0005 * k, "L_V": 0.3, "A_F": 0.5, "A_V": 0.9,
+           "loss_F": LF[k] + 0.1 * rs.randn(8)} for k in range(n)]
+    ctx = R.Ctx(t=np.full(8, 0.9), L_R0=0.03, L_V0=0.3)
+    for name, mk in {"R6": lambda: R.FirstHit(ctx, lambda sn, c: sn["L_F"] >= c.s, "R6"),
+                     "R7": lambda: R.ArgMin(ctx, R.J7, "R7"), "R8": lambda: R.ArgMin(ctx, R.J8, "R8"),
+                     "R9": lambda: R.FirstHit(ctx, lambda sn, c: float(np.median(sn["loss_F"] - c.t)) >= 0, "R9")}.items():
+        full = R.run_online(mk(), tr)
+        if full["triggered"]:     # cắt quỹ đạo ngay sau thời điểm quyết định: phải cho cùng k
+            cut = R.run_online(mk(), tr[: full["decided_at"] + 1])
+            assert cut["k"] == full["k"], name
+
+
+# ---------------------------------------------------------------- test 4: assert chia tập
+@pytest.fixture(scope="module")
+def tiny_env():
+    from ralm.data import Data
+    cfg = get_cfg("fake")
+    data = Data(cfg.as_profile(), torch.device("cpu"))
+    return cfg, data
+
+
+def test_set_assertions(tiny_env):
+    from pre_stop.data import choose_forget, stage_split
+    cfg, data = tiny_env
+    r1, p = stage_split(data, 0)
+    assert len(np.intersect1d(r1, p)) == 0 and np.array_equal(np.union1d(r1, p), data.d_idx_np)
+    f = choose_forget("random-450", cfg, p, data.ytr_np, 0)
+    s = Sets(data, cfg, r1, p, f, "random-450")
+    assert len(s.f_np) == cfg.f_small and len(np.intersect1d(s.f_np, s.v_np)) == 0
+    assert len(np.intersect1d(s.f_np, s.r2_np)) == 0 and np.isin(s.f_np, p).all()
+    with pytest.raises(AssertionError):                                   # F chứa mẫu của V
+        Sets(data, cfg, r1, p, np.concatenate([f[:-1], data.v_idx_np[:1]]), "random-450")
+    with pytest.raises(AssertionError):                                   # F ⊄ P
+        Sets(data, cfg, r1, p, np.concatenate([f[:-1], r1[:1]]), "random-450")
+    with pytest.raises(AssertionError):                                   # sai kích thước
+        Sets(data, cfg, r1, p, f[:-1], "random-450")
+    with pytest.raises(AssertionError):                                   # R1 ∩ P ≠ ∅
+        Sets(data, cfg, r1, np.concatenate([p, r1[:1]]), f, "random-450")
+
+
+# ---------------------------------------------------------------- test 6: eval tất định
+def test_eval_deterministic(tiny_env):
+    from pre_stop.measure import measure
+    from ralm.model import make_model
+    cfg, data = tiny_env
+    m = make_model(cfg.as_profile(), torch.device("cpu"))
+    m.eval()
+    idx = torch.from_numpy(data.d_idx_np[:200])
+    a = measure(m, data, cfg, idx)[1]
+    b = measure(m, data, cfg, idx)[1]
+    assert torch.equal(a, b)
+
+
+# ---------------------------------------------------------------- test 7: nhiễu sàn ν từ chối M < 3
+def test_noise_floor_needs_three():
+    with pytest.raises(ValueError):
+        noise_floor(np.random.rand(2, 10))
+    x = np.random.RandomState(1).rand(3, 10)
+    assert noise_floor(x) > 0
+
+
+def test_noise_floor_hand():
+    x = np.array([[1.0, 2.0], [2.0, 2.0], [3.0, 5.0]])
+    # m=0: |1-2.5|,|2-3.5| -> 1.5, 1.5 -> 1.5 ; m=1: |2-2|,|2-3.5| -> 0, 1.5 -> 0.75 ; m=2: |3-1.5|,|5-2| -> 1.5, 3 -> 2.25
+    assert noise_floor(x) == pytest.approx((1.5 + 0.75 + 2.25) / 3)
+
+
+# ---------------------------------------------------------------- test 2 + 5: pipeline nhỏ end-to-end
+@pytest.fixture(scope="module")
+def mini_run(tmp_path_factory):
+    from pre_stop.run import main
+    out = str(tmp_path_factory.mktemp("pre_out"))
+    common = ["--profile", "fake", "--out", out, "--seeds", "0", "--ftypes", "random-450", "--methods", "ga"]
+    assert main(["pre"] + common) == 0
+    assert main(["cfg"] + common) == 0
+    assert main(["lrscan"] + common) == 0
+    assert main(["traj"] + common) == 0
+    return out
+
+
+def _decisions(paths, cfg, seed=0, ft="random-450", method="ga"):
+    from pre_stop.pre_info import load_P
+    rid = paths.run_id(method, ft, seed, 0)
+    tr = R.load_traj(paths, rid)
+    P = load_P(paths, seed, ft)
+    out = {}
+    for mode in ("none", "V", "log"):
+        ctx = R.Ctx(R.make_target(P, mode, tr[0]["L_V"]), tr[0]["L_R"], tr[0]["L_V"])
+        for name, rule in R.online_rules(ctx).items():
+            out[(mode, name)] = R.run_online(rule, tr)
+    return out
+
+
+def test_rules_independent_of_oracle(mini_run):
+    cfg, paths = get_cfg("fake"), Paths(mini_run)
+    before = _decisions(paths, cfg)
+    shutil.rmtree(paths.root / "oracle")                                  # xoá thư mục oracle
+    assert not (paths.root / "oracle").exists()
+    after = _decisions(paths, cfg)
+    assert before == after and len(before) > 0
+
+
+def test_rules_module_has_no_oracle_import():
+    import inspect
+    import pre_stop.rules as m
+    import pre_stop.unlearn as u
+    for mod in (m, u):
+        src = inspect.getsource(mod)
+        code = "\n".join(l for l in src.splitlines() if l.lstrip().startswith(("import ", "from ")))
+        assert "eval_oracle" not in code, mod.__name__
+
+
+def test_P_frozen_before_stage2_and_hash(mini_run):
+    from pre_stop.pre_info import load_P
+    paths = Paths(mini_run)
+    st2 = json.loads(paths.stage2_stats(0, "random-450").read_text(encoding="utf-8"))
+    P = json.loads(paths.P_json(0, "random-450").read_text(encoding="utf-8"))
+    assert P["t_frozen"] <= st2["t_stage2_start"]                         # đóng băng TRƯỚC bước cập nhật đầu
+    load_P(paths, 0, "random-450")                                        # hash khớp
+    arr = np.load(paths.P_loss(0, "random-450"))
+    arr[0] += 1.0
+    np.save(paths.P_loss(0, "random-450"), arr)                           # sửa trộm
+    with pytest.raises(AssertionError):
+        load_P(paths, 0, "random-450")
+
+
+def test_test_metrics_sealed(mini_run):
+    paths = Paths(mini_run)
+    rid = paths.run_id("ga", "random-450", 0, 0)
+    row = json.loads(paths.traj_jsonl(rid).read_text(encoding="utf-8").splitlines()[0])
+    assert "L_T" not in row and "A_T" not in row                          # test nằm file riêng (§7)
+    t = json.loads(paths.traj_test(rid).read_text(encoding="utf-8").splitlines()[0])
+    assert t["post_selection"] is True
