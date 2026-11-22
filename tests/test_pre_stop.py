@@ -296,11 +296,12 @@ def test_stage1_runs_restores_best_and_records(tmp_path):
     from ralm.data import Data
     from dataclasses import replace
     cfg = replace(get_cfg("fake"), e1=40, patience1=2, warm1=1)
-    dev = torch.device("cpu")
+    # Cùng thiết bị với pipeline thật (run.py). Ép CPU trên Kaggle đã segfault ở backward của _fit.
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     data = Data(cfg.as_profile(), dev)
     r1, _ = stage_split(data, 0)
     info = {}
-    train_stage1(cfg, data, torch.from_numpy(r1), 0, dev, lambda *a, **k: None, info)
+    train_stage1(cfg, data, torch.from_numpy(r1).to(dev), 0, dev, lambda *a, **k: None, info)
     assert 1 <= info["best_epoch"] <= info["epochs_run"] <= 40
     assert info["stopped_early"] == (info["epochs_run"] < 40)
     assert stage1_signature(cfg)["patience1"] == 2
