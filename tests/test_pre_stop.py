@@ -283,6 +283,14 @@ def test_early_stop_patience_and_best():
     assert first_stop == 7, first_stop                              # 5 epoch xấu liên tiếp: 3,4,5,6,7 (vòng train break tại đây)
 
 
+def test_early_stop_only_when_lr_is_low():
+    from pre_stop.train import early_stop_start
+    from ralm.train import lr_at
+    st = early_stop_start(300, 100, 5, 0.1)
+    assert 235 <= st <= 245, st                                     # ~ epoch 240
+    assert lr_at(st * 100, 300 * 100, 5 * 100, 0.1) < 0.01 <= lr_at((st - 1) * 100, 300 * 100, 5 * 100, 0.1)
+
+
 def test_early_stop_ignores_warmup():
     from pre_stop.train import EarlyStop
     es = EarlyStop(2, start=4)

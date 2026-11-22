@@ -59,7 +59,7 @@ snapshot lấy ở cuối mỗi epoch (và epoch 0 = θ0). Số bước tối ư
 9. **Dữ liệu giả và ResNet width 8 chỉ để kiểm thử logic.** Kết quả của profile `fake` không có ý nghĩa khoa học và không được đưa vào báo cáo.
 
 ## Điều tôi chưa kiểm chứng
-- Giai đoạn 1 giờ chạy tối đa 300 epoch, dừng sớm khi loss train trên R1 không cải thiện 5 epoch liên tiếp (không tính 5 epoch warmup), rồi nạp lại trọng số của epoch tốt nhất; cosine lr vẫn tính theo 300 epoch. Số epoch thực chạy, epoch tốt nhất và lr lúc dừng ghi trong `stage1_run` của `pre_stats`. Cache θ_pre sinh bằng cách huấn luyện khác bị từ chối (`stage1_signature`).
+- Giai đoạn 1 chạy tối đa 300 epoch với cosine lr theo 300 epoch. Dừng sớm (patience 5, theo loss train trên R1) **chỉ được tính từ epoch mà lr đã xuống dưới 10% lr gốc** (khoảng epoch 240, hàm `early_stop_start`); sau đó nạp lại trọng số của epoch tốt nhất. Lý do: lần chạy đầu dừng ở epoch 43 khi lr còn 0,096, θ_pre chỉ đạt test acc 71,6% và bị cổng 90% chặn. Số epoch thực chạy, epoch tốt nhất và lr lúc dừng ghi trong `stage1_run` của `pre_stats`. Cache θ_pre sinh bằng cách huấn luyện khác bị từ chối (`stage1_signature`).
 - Báo cáo có mục 2b và `results/compare_retrain.csv`: L/A trên F, R, V, test của từng luật dừng đặt cạnh dòng RETRAIN (trung bình M=3 oracle), kèm IQR và chênh lệch có dấu.
 - Chưa chạy trên CIFAR-10 thật với cấu hình mới, nên chưa biết: θ_pre có đạt 90% không, cổng "F đã được học" đạt ở w_F nào, Cổng 1 (e_pre/nu) ra bao nhiêu, và thời gian chạy thật.
 - Ước tính compute trong kịch bản (10-15 giờ GPU cho Phase 1) chưa đo; nên chạy từng seed trong session riêng.

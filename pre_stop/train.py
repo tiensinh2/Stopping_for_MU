@@ -38,6 +38,21 @@ class EarlyStop:
         return improved, self.bad >= self.patience
 
 
+LOW_LR_FRAC = 0.1
+
+
+def early_stop_start(epochs: int, spe: int, warm_epochs: int, base_lr: float) -> int:
+    """Epoch đầu tiên mà lr cosine (đầu epoch) đã xuống dưới 10% lr gốc: từ đây mới được tính epoch xấu.
+
+    Dừng sớm lúc lr còn lớn (loss train dao động) làm θ_pre dừng khi chưa hội tụ (đã gặp: epoch 43, test acc 71,6%).
+    """
+    total, warm = epochs * spe, warm_epochs * spe
+    for ep in range(warm_epochs, epochs):                 # warmup có lr nhỏ nhưng chưa phải giai đoạn hội tụ
+        if lr_at(ep * spe, total, warm, base_lr) < LOW_LR_FRAC * base_lr:
+            return ep
+    return epochs
+
+
 def _fit(cfg: Cfg, data, model, epoch_idx, epochs: int, base_lr: float, warm_epochs: int, device,
          log=print, rec=None, rec_pos=None, tag="", patience=None, info=None):
     """SGD momentum 0.9 nesterov, wd 5e-4, cosine theo iteration. epoch_idx(ep) -> chỉ mục của epoch đó.
@@ -54,7 +69,7 @@ def _fit(cfg: Cfg, data, model, epoch_idx, epochs: int, base_lr: float, warm_epo
     use_amp = cfg.amp and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     it, t0 = 0, time.time()
-    es = EarlyStop(patience, start=warm_epochs) if patience else None
+    es = EarlyStop(patience, start=early_stop_start(epochs, spe, warm_epochs, base_lr)) if patience else None
     best_state, ran, stopped = None, 0, False
     for ep in range(epochs):
         model.train()
@@ -108,7 +123,7 @@ def _fit(cfg: Cfg, data, model, epoch_idx, epochs: int, base_lr: float, warm_epo
 def stage1_signature(cfg: Cfg) -> dict:
     """Mọi thứ quyết định θ_pre. Lưu cùng stats để không nạp nhầm cache của cách huấn luyện khác."""
     return {"e1": cfg.e1, "patience1": cfg.patience1, "warm1": cfg.warm1, "lr1": cfg.lr1,
-            "monitor": "train_loss_R1", "restore_best": True}
+            "monitor": "train_loss_R1", "restore_best": True, "stop_only_below_lr_frac": LOW_LR_FRAC}
 
 
 def check_stage1(cfg: Cfg, paths, seeds):
