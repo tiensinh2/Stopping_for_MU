@@ -1,11 +1,8 @@
-"""Unlearning ga / ngplus / scrub / salun / tarun / ft, đơn vị là EPOCH, theo code gốc của từng phương pháp.
+"""Unlearning ga / scrub / salun / tarun / ft, đơn vị là EPOCH, theo code gốc của từng phương pháp.
 
 Nguồn code gốc (đã clone vào _orig/ khi viết file này):
   ga      OPTML-Group/Unlearn-Saliency  Classification/unlearn/GA.py + impl.py
           SGD lr 0.01, momentum 0.9, wd 5e-4, batch 256, 10 epoch; mỗi epoch duyệt CHỈ F, loss = -CE, BN train.
-  ngplus  xcadet/deepunlearn munl/unlearning/neggradplus.py
-          SGD lr 0.01, momentum 0.9, wd 0, batch 256, alpha 0.95, 10 epoch; mỗi epoch duyệt zip(R, cycle(F)),
-          loss = alpha*CE_R - (1-alpha)*CE_F, BN eval. (l2_penalty nhân wd=0 nên bỏ.)
   ft      Unlearn-Saliency FT.py: SGD lr 0.01, momentum 0.9, wd 5e-4, batch 256, 10 epoch trên R, BN train.
   salun   Unlearn-Saliency generate_mask.py + RL.py (nhánh cifar10): mask = top 50% |grad(-CE_F)| (model.eval),
           SGD lr 0.013, momentum 0.9, wd 5e-4, batch 256, 10 epoch; mỗi epoch: F với nhãn ngẫu nhiên rồi R,
@@ -39,7 +36,7 @@ from .measure import measure, test_metrics
 assert "eval_oracle" not in globals(), "unlearn.py không được import eval_oracle (§0.4.1)"
 
 BN_MODE = {"ga": "train", "ft": "train", "salun": "train", "scrub": "train (student), eval (teacher)",
-           "ngplus": "eval", "tarun": "train (noise: eval)"}
+           "tarun": "train (noise: eval)"}
 
 
 def n_epochs_for(cfg: Cfg, method: str) -> int:
@@ -119,27 +116,6 @@ class FT(Base):
         last = 0.0
         for b in _batches(self.sets.r, 256):                 # CHỈ retain_loader
             last = self._update(self._ce(b))
-        return last
-
-
-class NegGradPlus(Base):
-    name = "ngplus"
-    ALPHA = 0.95
-
-    def __init__(self, *a):
-        super().__init__(*a)
-        self.opt = _sgd(self.model, 0.01, 0.0)
-
-    def epoch(self) -> float:
-        self.model.eval()                                    # code gốc: model.eval() trong lúc train
-        fb = [self.data.batch(b, augment=True) for b in _batches(self.sets.f, 256)]   # cycle() lưu bản của lượt đầu
-        last = 0.0
-        for i, rb in enumerate(_batches(self.sets.r, 256)):  # số bước/epoch = số batch của R
-            xr, yr = self.data.batch(rb, augment=True)
-            xf, yf = fb[i % len(fb)]
-            loss = (self.ALPHA * F.cross_entropy(self._fwd(xr), yr)
-                    - (1 - self.ALPHA) * F.cross_entropy(self._fwd(xf), yf))
-            last = self._update(loss)
         return last
 
 
@@ -304,7 +280,7 @@ class Tarun(Base):
         return self._run(xr, yr, 0.01)                            # repair: chỉ retain, Adam 0.01
 
 
-METHOD_CLS = {"ga": GA, "ngplus": NegGradPlus, "ft": FT, "salun": SalUn, "scrub": Scrub, "tarun": Tarun}
+METHOD_CLS = {"ga": GA, "ft": FT, "salun": SalUn, "scrub": Scrub, "tarun": Tarun}
 TARUN_FTYPES = ("class-0",)       # UNSIR gốc chỉ quên theo lớp: không áp dụng được cho F ngẫu nhiên / hard
 
 

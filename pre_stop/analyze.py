@@ -199,7 +199,7 @@ def criteria(df: pd.DataFrame, gate: pd.DataFrame) -> pd.DataFrame:
             n_ok = sum(1 for (ft, me), c in cell.items() if c["c2"] and c["c3"])
             fts = {ft for ft, _ in cell}
             ok_ft = {ft for ft in fts if all(cell[(ft, me)]["c2"] and cell[(ft, me)]["c3"]
-                                              for me in ("ga", "ngplus") if (ft, me) in cell)}
+                                              for me in ("ga", "scrub") if (ft, me) in cell)}
             rows.append({"rule": rule, "target": mode, "c1_premise_med_e_pre_over_nu": prem[mode],
                          "c1_ok": prem[mode] <= 5, "c2_cells": sum(c["c2"] for c in cell.values()),
                          "c3_cells": sum(c["c3"] for c in cell.values()), "c4_cells": sum(c["c4"] for c in cell.values()),

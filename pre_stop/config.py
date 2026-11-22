@@ -13,7 +13,7 @@ PHI = 0.1                     # §2.3: replay R1 mỗi epoch của giai đoạn 
 GATE_F = 0.2                  # §2.3: L_F(θ0) <= 0.2 * L_F^pre
 WF_ORDER = (1, 5, 10)         # §2.3: thứ tự w_F thử
 M_ORACLE = 3                  # §2.4
-ORIG_EPOCHS = 10              # số epoch mặc định của code gốc (GA, NegGrad+, FT, SalUn, SCRUB)
+ORIG_EPOCHS = 10              # số epoch mặc định của code gốc (GA, FT, SalUn, SCRUB)
 LAMBDA_R = 1.0                # §8.2 [FIXED]
 P_HIT = 3                     # §8.1: kiên nhẫn cho luật first-hit
 Q_ARGMIN = 10                 # §8.1: kiên nhẫn cho luật argmin
@@ -22,7 +22,7 @@ GV_MULT = 1.10                # §8.1 rào G_V
 UTIL_GATE_PTS = 1.0           # §9.3: g_T <= 1.0 điểm để chọn k*
 GATE1_RATIO = 10.0            # §10: median e_pre/nu > 10 -> dừng
 FTYPES = ("random-450", "random-1350", "class-0", "hard-450")
-METHODS = ("ga", "ngplus", "scrub", "salun", "tarun", "ft")
+METHODS = ("ga", "scrub", "salun", "tarun", "ft")
 MAIN_FTYPE = "random-450"
 
 

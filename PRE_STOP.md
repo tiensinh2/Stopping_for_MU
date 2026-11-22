@@ -8,7 +8,7 @@ Mục dưới đây là những chỗ **tôi tự quyết hoặc chưa làm**; �
 python -m pre_stop.run pre   --profile kaggle --out ./pre_out --seeds 0 1 2       # giai đoạn 1
 python -m pre_stop.run cfg   ... --ftypes random-450 random-1350 class-0 hard-450  # giai đoạn 2, P, oracle
 python -m pre_stop.run gate1 ...                                                  # Cổng 1 (chỉ cảnh báo)
-python -m pre_stop.run traj  ... --methods ga ngplus scrub salun tarun ft          # quỹ đạo unlearning
+python -m pre_stop.run traj  ... --methods ga scrub salun tarun ft          # quỹ đạo unlearning
 python -m pre_stop.run analyze ...
 ```
 Notebook: `pre_stop_kaggle.ipynb`. Kiểm thử: `pytest tests/test_pre_stop.py` (17 test, CPU, dữ liệu giả).
@@ -21,17 +21,16 @@ snapshot lấy ở cuối mỗi epoch (và epoch 0 = θ0). Số bước tối ư
 | Phương pháp | Nguồn | Epoch | Mỗi epoch duyệt | Optimizer | BN |
 |---|---|---|---|---|---|
 | `ga` | OPTML-Group/Unlearn-Saliency `GA.py` | 10 | chỉ F, loss = -CE | SGD lr 0.01, mom 0.9, wd 5e-4, batch 256 | train |
-| `ngplus` | xcadet/deepunlearn `neggradplus.py` | 10 | `zip(R, cycle(F))`: số bước = số batch của R; loss = 0.95·CE_R − 0.05·CE_F | SGD lr 0.01, mom 0.9, wd 0, batch 256 | **eval** |
 | `ft` | Unlearn-Saliency `FT.py` | 10 | chỉ R | SGD lr 0.01, mom 0.9, wd 5e-4, batch 256 | train |
 | `salun` | Unlearn-Saliency `generate_mask.py` + `RL.py` | 10 | F nhãn ngẫu nhiên rồi R, grad nhân mask (top 50% \|grad(−CE_F)\|), tham số ngoài mask được trả về giá trị đầu epoch | SGD lr 0.013, mom 0.9, wd 5e-4, batch 256 | train |
 | `scrub` | meghdadk/SCRUB notebook + `loops.py` | 10 | epoch ≤ 3: maximize (−KL) trên F (batch 64) rồi minimize (CE + 0.5·KL, T=2) trên R (batch 32); epoch > 3 chỉ minimize | Adam lr 5e-4, wd 0.1; lr ×0.1 sau epoch 5, 8, 9 | train (student), eval (teacher) |
 | `tarun` | vikram2000b/Fast-Machine-Unlearning notebook (UNSIR) | **2** | epoch 1 = impair (noise đã học + 1000 mẫu R mỗi lớp giữ lại, Adam 0.02); epoch 2 = repair (chỉ R, Adam 0.01); batch 256 | Adam | train |
 
 **Điều bạn cần biết về chuyện đếm epoch:**
-1. **GA gốc chỉ duyệt F.** Với |F|=450 và batch 256 thì một epoch chỉ có 2 bước cập nhật, nên quỹ đạo GA rất thô (10 điểm, 20 bước tổng). FT/NegGrad+ có ~174 bước mỗi epoch (|R|≈44.550, batch 256). Vì vậy "epoch" của các phương pháp **không cùng thang**; không so sánh k giữa phương pháp theo epoch mà phải đọc cùng `n_updates`.
+1. **GA gốc chỉ duyệt F.** Với |F|=450 và batch 256 thì một epoch chỉ có 2 bước cập nhật, nên quỹ đạo GA rất thô (10 điểm, 20 bước tổng). FT có ~174 bước mỗi epoch (|R|≈44.550, batch 256). Vì vậy "epoch" của các phương pháp **không cùng thang**; không so sánh k giữa phương pháp theo epoch mà phải đọc cùng `n_updates`.
 2. **Quỹ đạo ngắn: 11 điểm (epoch 0..10) thay cho 201.** Luật có kiên nhẫn p=3 (first-hit) và q=10 (argmin) vốn tính theo snapshot. Với 11 điểm, q=10 gần như không bao giờ kết thúc sớm, và `R2-fixed-K` dùng K ∈ {1, 2, 3, 5, 10} epoch. Tarun chỉ có 3 điểm (epoch 0, 1, 2) nên các luật có patience về cơ bản không áp dụng được với nó.
 3. **Tarun/UNSIR gốc chỉ định nghĩa cho quên theo lớp**, nên chỉ chạy với `class-0`. Các loại F ngẫu nhiên và hard bị bỏ qua và có thông báo. `ft` vẫn chỉ chạy trên `random-450` (đối chứng).
-4. **`ngplus` chạy BN eval** như code gốc. BN eval với model chưa được hiệu chỉnh cho gradient lớn có thể phân kỳ; nếu phân kỳ thì quỹ đạo bị cắt và gắn cờ `diverged` trong `meta`. Đây là hành vi của phương pháp gốc ở lr 0.01, không phải lỗi pipeline. Trên dữ liệu giả (ResNet width 8) nó phân kỳ ngay epoch 1; chưa biết trên CIFAR-10 thật.
+4. **`ngplus` (NegGrad+) đã bị bỏ** theo yêu cầu: lần chạy đầu trên CIFAR-10 thật phân kỳ ở cả 4 loại F (BN eval, lr 0.01), không có quỹ đạo dùng được. `ga` là NegGrad kinh điển (gradient ascent trên F, BN train). Kết quả của lần chạy đó vẫn nằm trong `stopping-mu (1).ipynb` nhưng không đưa vào báo cáo.
 5. **SCRUB:** dùng notebook gốc của `meghdadk` (không có SWA/`param_dist`; bản `deepunlearn` có thêm hai thứ này nên **không** dùng). `beta=0` theo notebook. Dữ liệu SCRUB không augmentation (như notebook gốc). Các phương pháp khác dùng augmentation (RandomCrop+Flip) như loader train gốc.
 6. **SalUn:** nhánh `cifar10` của `RL.py` (F nhãn ngẫu nhiên, rồi R). Lr 0.013 lấy từ ví dụ trong README của repo, không phải mặc định `--unlearn_lr 0.01` của `arg_parser`; vì chỉ thị là "theo code gốc", nếu bạn muốn dùng 0.01 thì sửa `SalUn.__init__`.
 7. **Tarun:** nhãn noise là lớp bị quên (như trong notebook: `class_num = 0` cố định, tôi dùng đúng lớp `c`; **đây là khác biệt so với notebook** vì notebook gán nhãn 0 cho mọi noise, hợp lý chỉ khi quên 1 lớp = lớp 0). Với `class-0` hai cách trùng nhau. Mẫu retain: tối đa 1000 mẫu mỗi lớp giữ lại, đúng notebook.
@@ -60,6 +59,6 @@ snapshot lấy ở cuối mỗi epoch (và epoch 0 = θ0). Số bước tối ư
 9. **Dữ liệu giả và ResNet width 8 chỉ để kiểm thử logic.** Kết quả của profile `fake` không có ý nghĩa khoa học và không được đưa vào báo cáo.
 
 ## Điều tôi chưa kiểm chứng
-- Chưa chạy trên CIFAR-10 thật, nên chưa biết: θ_pre có đạt 90% không, cổng "F đã được học" đạt ở w_F nào, Cổng 1 (e_pre/nu) ra bao nhiêu, `ngplus` có phân kỳ không, và thời gian chạy thật.
+- Chưa chạy trên CIFAR-10 thật, nên chưa biết: θ_pre có đạt 90% không, cổng "F đã được học" đạt ở w_F nào, Cổng 1 (e_pre/nu) ra bao nhiêu, và thời gian chạy thật.
 - Ước tính compute trong kịch bản (10-15 giờ GPU cho Phase 1) chưa đo; nên chạy từng seed trong session riêng.
 - Tiền đề "loss trước khi học F ~ loss của oracle" là giả thuyết cần đo bằng Cổng 1, không phải điều đã biết.

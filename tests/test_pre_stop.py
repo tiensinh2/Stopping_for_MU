@@ -219,13 +219,13 @@ def _fresh_model(cfg):
 
 
 def test_epoch_semantics_match_original_code():
-    """GA: 1 epoch = 1 lượt qua F. FT, NegGrad+, SalUn, SCRUB: đếm theo số batch của loader gốc."""
+    """GA: 1 epoch = 1 lượt qua F. FT, SalUn, SCRUB: đếm theo số batch của loader gốc."""
     import math
     from pre_stop import unlearn as U
     cfg, data, sets = _epoch_env(None)
     dev = torch.device("cpu")
     nF, nR = len(sets.f), len(sets.r)
-    exp = {"ga": math.ceil(nF / 256), "ft": math.ceil(nR / 256), "ngplus": math.ceil(nR / 256),
+    exp = {"ga": math.ceil(nF / 256), "ft": math.ceil(nR / 256),
            "salun": math.ceil(nF / 256) + math.ceil(nR / 256),
            "scrub": math.ceil(nR / 32)}                      # epoch 1 của SCRUB gốc còn có pha maximize trên F
     exp["scrub"] += math.ceil(nF / 64)
