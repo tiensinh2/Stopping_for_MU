@@ -122,6 +122,17 @@ def check_stage1(cfg: Cfg, paths, seeds):
                              "mới và để RESTORE_FROM rỗng.")
 
 
+def require_pre(paths, seeds):
+    """cfg / gate1 / traj cần θ_pre của đúng các seed được yêu cầu: báo rõ seed nào thiếu bước `pre`."""
+    miss = [s for s in seeds if not (paths.pre_ckpt(s).exists() and paths.pre_stats(s).exists()
+                                     and paths.split(s).exists())]
+    if miss:
+        raise SystemExit(f"[thiếu θ_pre] seed {miss} chưa có kết quả bước `pre` trong {paths.root}. "
+                         f"Chạy `pre --seeds {' '.join(map(str, miss))}` trước (cùng --out), hoặc bỏ các seed này "
+                         "khỏi SEEDS. Nếu `pre` của seed đó bị dừng giữa chừng, xem log: có thể do hết giờ session "
+                         "hoặc cổng test acc ≥ 90%.")
+
+
 def train_stage1(cfg: Cfg, data, r1: torch.Tensor, seed: int, device, log=print, info=None):
     seed_all(seed)
     model = make_model(cfg.as_profile(), device)

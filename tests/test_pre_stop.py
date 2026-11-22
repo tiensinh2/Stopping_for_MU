@@ -332,3 +332,10 @@ def test_report_compares_with_retrain(tmp_path):
         assert m in c.columns and m + "_iqr" in c.columns
     r7 = c[c.rule == "R7-PRE-J"].iloc[0]
     assert abs(r7["gap_A_T"] - (r7["A_T"] - c[c.rule.str.startswith("RETRAIN")].iloc[0]["A_T"])) < 1e-9
+
+
+def test_missing_pre_is_reported_clearly(tmp_path):
+    from pre_stop.run import main
+    with pytest.raises(SystemExit, match='thiếu θ_pre'):
+        main(['cfg', '--profile', 'fake', '--out', str(tmp_path), '--seeds', '1', '--ftypes', 'random-450'])
+
