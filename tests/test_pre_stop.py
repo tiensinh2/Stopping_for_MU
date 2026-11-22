@@ -269,3 +269,65 @@ def test_epoch_count_and_tarun_two_epochs():
     assert applicable("tarun", "class-0") and not applicable("tarun", "random-450")
     assert applicable("ft", "random-450") and not applicable("ft", "class-0")
 
+
+
+# ---------------------------------------------------------------- giai đoạn 1: dừng sớm theo loss train
+def test_early_stop_patience_and_best():
+    from pre_stop.train import EarlyStop
+    es = EarlyStop(5)
+    losses = [1.0, 0.8, 0.6, 0.61, 0.62, 0.60, 0.63, 0.64, 0.7]
+    out = [es.update(i, l) for i, l in enumerate(losses)]
+    assert [o[0] for o in out][:3] == [True, True, True]            # 3 epoch đầu đều cải thiện
+    assert es.best == 0.6 and es.best_ep == 2
+    first_stop = next(i for i, o in enumerate(out) if o[1])
+    assert first_stop == 7, first_stop                              # 5 epoch xấu liên tiếp: 3,4,5,6,7 (vòng train break tại đây)
+
+
+def test_early_stop_ignores_warmup():
+    from pre_stop.train import EarlyStop
+    es = EarlyStop(2, start=4)
+    res = [es.update(i, l)[1] for i, l in enumerate([1.0, 1.1, 1.2, 1.3, 1.4, 1.5])]
+    assert res == [False, False, False, False, False, True]         # epoch 0..3 không bị tính là xấu
+
+
+def test_stage1_runs_restores_best_and_records(tmp_path):
+    from pre_stop.train import train_stage1, stage1_signature
+    from pre_stop.data import stage_split
+    from ralm.data import Data
+    from dataclasses import replace
+    cfg = replace(get_cfg("fake"), e1=40, patience1=2, warm1=1)
+    dev = torch.device("cpu")
+    data = Data(cfg.as_profile(), dev)
+    r1, _ = stage_split(data, 0)
+    info = {}
+    train_stage1(cfg, data, torch.from_numpy(r1), 0, dev, lambda *a, **k: None, info)
+    assert 1 <= info["best_epoch"] <= info["epochs_run"] <= 40
+    assert info["stopped_early"] == (info["epochs_run"] < 40)
+    assert stage1_signature(cfg)["patience1"] == 2
+
+
+def test_old_stage1_cache_is_rejected(mini_run):
+    from dataclasses import replace
+    from pre_stop.train import check_stage1
+    cfg, paths = get_cfg("fake"), Paths(mini_run)
+    check_stage1(cfg, paths, [0])                                   # cùng cấu hình: được
+    with pytest.raises(SystemExit):
+        check_stage1(replace(cfg, patience1=cfg.patience1 + 1), paths, [0])
+
+
+def test_report_compares_with_retrain(tmp_path):
+    from pre_stop import analyze as A
+    from pre_stop.run import main
+    common = ["--profile", "fake", "--out", str(tmp_path), "--seeds", "0", "--ftypes", "random-450", "--methods", "ga"]
+    for cmd in ("pre", "cfg", "traj"):
+        assert main([cmd] + common) == 0
+    cfg, paths = get_cfg("fake"), Paths(str(tmp_path))
+    A.analyze_all(cfg, paths, [0], ["random-450"], ["ga"])
+    txt = (paths.results / "report_auto.md").read_text(encoding="utf-8")
+    assert "RETRAIN" in txt and "2b. So sánh với mô hình retrain" in txt
+    import pandas as pd
+    c = pd.read_csv(paths.results / "compare_retrain.csv")
+    for m in A.CMP:
+        assert m in c.columns and m + "_iqr" in c.columns
+    r7 = c[c.rule == "R7-PRE-J"].iloc[0]
+    assert abs(r7["gap_A_T"] - (r7["A_T"] - c[c.rule.str.startswith("RETRAIN")].iloc[0]["A_T"])) < 1e-9

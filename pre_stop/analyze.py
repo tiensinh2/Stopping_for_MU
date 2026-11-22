@@ -29,7 +29,21 @@ def _iqr(x):
 
 def read_test(paths, rid):
     rows = [json.loads(l) for l in paths.traj_test(rid).read_text(encoding="utf-8").splitlines() if l.strip()]
-    return np.array([r["A_T"] for r in rows])
+    return np.array([r["A_T"] for r in rows]), np.array([r["L_T"] for r in rows])
+
+
+# các chỉ số đem so với mô hình retrain (oracle θ_R2); R = R_sub (5000 mẫu), V = tập validation, T = test
+CMP = ("L_F", "A_F", "L_R", "A_R", "L_V", "A_V", "L_T", "A_T")
+
+
+def oracle_metrics(orc) -> dict:
+    """Trung bình và độ lệch chuẩn của M oracle cho từng chỉ số trong CMP."""
+    out = {}
+    for m in CMP:
+        v = getattr(orc, m)
+        out[m] = float(np.mean(v))
+        out[m + "_sd"] = float(np.std(v, ddof=1))
+    return out
 
 
 def gate1_row(cfg, paths, seed, ftype, L_R0=None, L_V0=None) -> dict:
@@ -53,7 +67,7 @@ def gate1_row(cfg, paths, seed, ftype, L_R0=None, L_V0=None) -> dict:
 def analyze_run(cfg: Cfg, paths, seed, ftype, method, u=0) -> list[dict]:
     rid = paths.run_id(method, ftype, seed, u)
     traj = R.load_traj(paths, rid)
-    A_T = read_test(paths, rid)                       # post-selection: chỉ analyze đọc
+    A_T, L_T = read_test(paths, rid)                  # post-selection: chỉ analyze đọc
     orc, P = Oracle(paths, seed, ftype), load_P(paths, seed, ftype)
     pre = json.loads(paths.pre_stats(seed).read_text(encoding="utf-8"))
     n = len(traj)
@@ -69,6 +83,7 @@ def analyze_run(cfg: Cfg, paths, seed, ftype, method, u=0) -> list[dict]:
     auc_or = float(np.mean([auc_conf(conf_of(orc.logits_F[m]), conf_of(orc.logits_V[m].astype(np.float64)))
                             for m in range(orc.M)]))
     nF, nV, nR = len(traj[0]["loss_F"]), z["loss_V"].shape[1], 5000
+    orc_m = oracle_metrics(orc)
     recs = []
 
     def add(rule, target, res, extra=None):
@@ -81,19 +96,27 @@ def analyze_run(cfg: Cfg, paths, seed, ftype, method, u=0) -> list[dict]:
                "epoch_star": traj[k_star]["epoch"], "regret": d_hat[k] - d_hat[k_star],
                "delta0": d_hat[0] - d_hat[k], "g_T": g_T[k], "G_KL": kl[k],
                "auc_gap": abs(auc_k[k] - auc_or), "L_F": traj[k]["L_F"], "A_F": traj[k]["A_F"],
-               "L_R": traj[k]["L_R"], "L_V": traj[k]["L_V"], "A_T": A_T[k]}
+               "L_R": traj[k]["L_R"], "A_R": traj[k]["A_R"], "L_V": traj[k]["L_V"], "A_V": traj[k]["A_V"],
+               "A_T": A_T[k], "L_T": L_T[k]}
         code = FWD.get(rule, "")
         row["fwd_images_per_snapshot"] = ("F" in code) * nF + ("R" in code) * nR + ("V" in code) * nV
         if extra:
             row.update(extra)
+        for m in CMP:                                  # chênh lệch có dấu so với trung bình oracle (retrain)
+            row["retrain_" + m] = orc_m[m]
+            row["gap_" + m] = row[m] - orc_m[m]
         recs.append(row)
 
     add("R0-do-nothing", "-", R.r0_do_nothing(traj))
     # R1 rollback: không phải luật trên quỹ đạo; k_star/regret tính cùng thang để so sánh
     rb = {"k": 0, "decided_at": 0, "triggered": True, "no_admissible": False}
+    # rollback = chính θ_pre: chỉ có các chỉ số đã đo trên θ_pre (F, V, test); R_sub không đo nên để NaN
+    nan = float("nan")
     add("R1-rollback", "-", rb, {"d_hat": orc.d_hat(P["loss_F_pre"]), "g_T": orc.g_T(pre["A_T_pre"]),
                                   "regret": orc.d_hat(P["loss_F_pre"]) - d_hat[k_star], "delta0": d_hat[0] - orc.d_hat(P["loss_F_pre"]),
-                                  "epoch": -1, "k": -1, "pick_k0": 0})
+                                  "epoch": -1, "k": -1, "pick_k0": 0,
+                                  "L_F": P["L_F_pre"], "A_F": P["A_F_pre"], "L_V": P["L_V_pre"], "A_V": nan,
+                                  "L_R": nan, "A_R": nan, "A_T": pre["A_T_pre"], "L_T": pre["L_T_pre"]})
     for K in cfg.fixed_k:
         add(f"R2-fixed-{K}", "-", R.r2_fixed(traj, K))
     ctx0 = R.Ctx(R.make_target(P, "none", L_V0), L_R0, L_V0)
@@ -162,6 +185,30 @@ def summarize(df: pd.DataFrame) -> pd.DataFrame:
     out["pct_k0"] *= 100
     out["no_adm"] *= 100
     return out
+
+
+def compare_retrain(df: pd.DataFrame, rules=None) -> pd.DataFrame:
+    """Median (và IQR) qua seed của 8 chỉ số tại điểm dừng, kèm dòng retrain = trung bình M oracle.
+
+    Mỗi (ftype, method) một nhóm; cột gap_* là chênh lệch có dấu so với retrain (median qua seed).
+    """
+    rows = []
+    for (ft, me), g in df.groupby(["ftype", "method"], sort=False):
+        r = {"ftype": ft, "method": me, "rule": "RETRAIN (oracle, trung bình M=3)", "target": "-", "n": g.seed.nunique()}
+        for m in CMP:
+            r[m] = float(g.groupby("seed")["retrain_" + m].first().median())
+            r[m + "_iqr"] = _iqr(g.groupby("seed")["retrain_" + m].first())
+        rows.append(r)
+        for (rule, tg), h in g.groupby(["rule", "target"], sort=False):
+            if rules is not None and rule not in rules:
+                continue
+            r = {"ftype": ft, "method": me, "rule": rule, "target": tg, "n": len(h)}
+            for m in CMP:
+                r[m] = float(h[m].median())
+                r[m + "_iqr"] = _iqr(h[m].dropna())
+                r["gap_" + m] = float(h["gap_" + m].median())
+            rows.append(r)
+    return pd.DataFrame(rows)
 
 
 def sign_test(df: pd.DataFrame, a: str, b: str) -> dict:
@@ -252,6 +299,7 @@ def analyze_all(cfg: Cfg, paths, seeds, ftypes, methods, us=(0,), log=print) -> 
     gate.to_csv(paths.results / "gate1.csv", index=False)
     summ = summarize(df)
     summ.to_csv(paths.results / "summary_rules.csv", index=False)
+    compare_retrain(df).to_csv(paths.results / "compare_retrain.csv", index=False)
     crit = criteria(df, gate) if len(gate) else pd.DataFrame()
     crit.to_csv(paths.results / "criteria.csv", index=False)
     rej = reject_checks(df, gate) if len(gate) else {}
@@ -283,6 +331,15 @@ def write_report(paths, cfg, gate, summ, crit, rej, st, df):
          "## 2. Bảng chính: median regret chuẩn hoá theo luật\n"]
     for (ft, me), g in summ.groupby(["ftype", "method"]):
         L += [f"### {ft} · {me}\n", _md(g.drop(columns=["ftype", "method"])), ""]
+    L += ["## 2b. So sánh với mô hình retrain (oracle θ_R2, trung bình M=3), median qua seed\n",
+          "Mỗi nhóm có một dòng RETRAIN (mốc so sánh) và các luật dừng. L = loss, A = accuracy; "
+          "F = forget set, R = retain (R_sub 5000 mẫu), V = validation, T = test. "
+          "Bản đầy đủ kèm IQR và chênh lệch có dấu `gap_*` nằm ở `results/compare_retrain.csv`. "
+          "R1-rollback chính là θ_pre nên không có L_R, A_R, A_V (không đo).\n"]
+    cmp_ = compare_retrain(df)
+    show = ["rule", "target", "n"] + list(CMP)
+    for (ft, me), g in cmp_.groupby(["ftype", "method"], sort=False):
+        L += [f"### {ft} · {me}\n", _md(g[show]), ""]
     L += ["## 3. Tiêu chí thành công §12.1 (báo đủ các biến thể, không chọn biến thể tốt nhất sau khi xem)\n",
           _md(crit), "", "## 4. Điều kiện bác bỏ §12.2\n", "```json\n" + json.dumps(rej, indent=2) + "\n```", "",
           "## 5. Kiểm định dấu (R7 so với baseline)\n", _md(pd.DataFrame(st)), "",

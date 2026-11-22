@@ -33,7 +33,8 @@ class Cfg:
     data_root: str = "./data_raw"
     num_classes: int = 10
     # giai đoạn 1 (§5)
-    e1: int = 100
+    e1: int = 300                    # tối đa; dừng sớm theo loss train trên R1 (patience1)
+    patience1: int = 5               # số epoch liên tiếp loss train không cải thiện thì dừng, nạp lại epoch tốt nhất
     warm1: int = 5
     lr1: float = 0.1
     min_pre_acc: float | None = 0.90

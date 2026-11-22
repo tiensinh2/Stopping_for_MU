@@ -19,11 +19,32 @@ from .eval_oracle import save_oracle
 from .measure import mean_loss_acc, measure, test_metrics
 
 
+class EarlyStop:
+    """Dừng khi loss không cải thiện so với giá trị tốt nhất sau `patience` epoch liên tiếp.
+
+    Chỉ đếm epoch xấu từ epoch `start` trở đi (bỏ qua giai đoạn warmup). update() trả về (cải thiện, dừng).
+    """
+
+    def __init__(self, patience: int, start: int = 0):
+        self.patience, self.start = patience, start
+        self.best, self.best_ep, self.bad = float("inf"), -1, 0
+
+    def update(self, ep: int, loss: float):
+        improved = loss < self.best
+        if improved:
+            self.best, self.best_ep, self.bad = loss, ep, 0
+        elif ep >= self.start:
+            self.bad += 1
+        return improved, self.bad >= self.patience
+
+
 def _fit(cfg: Cfg, data, model, epoch_idx, epochs: int, base_lr: float, warm_epochs: int, device,
-         log=print, rec=None, rec_pos=None, tag=""):
+         log=print, rec=None, rec_pos=None, tag="", patience=None, info=None):
     """SGD momentum 0.9 nesterov, wd 5e-4, cosine theo iteration. epoch_idx(ep) -> chỉ mục của epoch đó.
 
     rec/rec_pos: ghi loss train-mode lần xuất hiện đầu tiên của từng mẫu F trong epoch 0 (P-log, §3).
+    patience: nếu có, dừng sớm theo loss train trung bình của epoch; cuối cùng nạp lại trọng số của epoch tốt nhất.
+    info: dict được điền epochs_run / best_epoch / best_loss / stopped_early / lr_at_stop.
     """
     opt = torch.optim.SGD(model.parameters(), lr=base_lr, momentum=cfg.momentum, nesterov=True,
                           weight_decay=cfg.wd)
@@ -33,6 +54,8 @@ def _fit(cfg: Cfg, data, model, epoch_idx, epochs: int, base_lr: float, warm_epo
     use_amp = cfg.amp and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     it, t0 = 0, time.time()
+    es = EarlyStop(patience, start=warm_epochs) if patience else None
+    best_state, ran, stopped = None, 0, False
     for ep in range(epochs):
         model.train()
         idx_all = epoch_idx(ep)
@@ -59,16 +82,51 @@ def _fit(cfg: Cfg, data, model, epoch_idx, epochs: int, base_lr: float, warm_epo
             it += 1
             tl += float(loss.detach()) * len(idx)
             ta += float((out.argmax(1) == y).sum())
-        if ep % 5 == 0 or ep == epochs - 1:
+        ran = ep + 1
+        stop = False
+        if es is not None:
+            improved, stop = es.update(ep, tl / n)
+            if improved:
+                best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        if ep % 5 == 0 or ep == epochs - 1 or stop:
             log(f"  {tag} ep {ep + 1}/{epochs} loss {tl / n:.4f} acc {ta / n:.4f} t {time.time() - t0:.0f}s")
+        if stop:
+            stopped = True
+            log(f"  {tag} DỪNG SỚM sau {ran} epoch: loss train không cải thiện {patience} epoch liên tiếp; "
+                f"nạp lại epoch {es.best_ep + 1} (loss {es.best:.4f}), lr hiện tại {opt.param_groups[0]['lr']:.5f}")
+            break
+    if es is not None and best_state is not None:
+        model.load_state_dict(best_state)
+    if info is not None:
+        info.update({"epochs_run": ran, "best_epoch": (es.best_ep + 1) if es else ran,
+                     "best_loss": float(es.best) if es else None, "stopped_early": stopped,
+                     "lr_at_stop": float(opt.param_groups[0]["lr"])})
     model.eval()
     return model
 
 
-def train_stage1(cfg: Cfg, data, r1: torch.Tensor, seed: int, device, log=print):
+def stage1_signature(cfg: Cfg) -> dict:
+    """Mọi thứ quyết định θ_pre. Lưu cùng stats để không nạp nhầm cache của cách huấn luyện khác."""
+    return {"e1": cfg.e1, "patience1": cfg.patience1, "warm1": cfg.warm1, "lr1": cfg.lr1,
+            "monitor": "train_loss_R1", "restore_best": True}
+
+
+def check_stage1(cfg: Cfg, paths, seeds):
+    """θ_pre đổi thì θ0, oracle, quỹ đạo đều đổi: cache sinh bởi cách huấn luyện khác phải bị từ chối."""
+    sig = stage1_signature(cfg)
+    for s in seeds:
+        p = paths.pre_stats(s)
+        if p.exists() and json.loads(p.read_text(encoding="utf-8")).get("stage1_signature") != sig:
+            raise SystemExit(f"[cache cũ] θ_pre của seed {s} trong {paths.root} được train bằng cấu hình khác {sig}. "
+                             "θ0, oracle và quỹ đạo phụ thuộc vào nó nên không dùng lại được: hãy chạy với thư mục OUT "
+                             "mới và để RESTORE_FROM rỗng.")
+
+
+def train_stage1(cfg: Cfg, data, r1: torch.Tensor, seed: int, device, log=print, info=None):
     seed_all(seed)
     model = make_model(cfg.as_profile(), device)
-    return _fit(cfg, data, model, lambda ep: r1, cfg.e1, cfg.lr1, cfg.warm1, device, log, tag="[stage1]")
+    return _fit(cfg, data, model, lambda ep: r1, cfg.e1, cfg.lr1, cfg.warm1, device, log, tag="[stage1]",
+                patience=cfg.patience1, info=info)
 
 
 def train_stage2(cfg: Cfg, data, sets: Sets, pre_state: dict, w_F: int, seed: int, device, with_f: bool = True,
@@ -100,11 +158,13 @@ def prepare_seed(cfg: Cfg, paths, data, seed: int, device, log=print, force: boo
     r1, p = stage_split(data, seed)
     save_split(paths, seed, r1, p)
     log(f"[pre] seed {seed}: train θ_pre trên R1 |R1|={len(r1)} |P|={len(p)}")
-    model = train_stage1(cfg, data, torch.from_numpy(r1).to(device), seed, device, log)
+    info: dict = {}
+    model = train_stage1(cfg, data, torch.from_numpy(r1).to(device), seed, device, log, info)
     ck.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), ck)
     L_T, A_T = test_metrics(model, data, cfg)      # chỉ ghi file stats; luật không đọc file này
     stats = {"seed": seed, "L_T_pre": L_T, "A_T_pre": A_T, "gate_min_acc": cfg.min_pre_acc,
+             "stage1_signature": stage1_signature(cfg), "stage1_run": info,
              "gate_passed": cfg.min_pre_acc is None or A_T >= cfg.min_pre_acc,
              "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")}
     st.parent.mkdir(parents=True, exist_ok=True)

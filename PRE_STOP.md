@@ -59,6 +59,8 @@ snapshot lấy ở cuối mỗi epoch (và epoch 0 = θ0). Số bước tối ư
 9. **Dữ liệu giả và ResNet width 8 chỉ để kiểm thử logic.** Kết quả của profile `fake` không có ý nghĩa khoa học và không được đưa vào báo cáo.
 
 ## Điều tôi chưa kiểm chứng
-- Chưa chạy trên CIFAR-10 thật, nên chưa biết: θ_pre có đạt 90% không, cổng "F đã được học" đạt ở w_F nào, Cổng 1 (e_pre/nu) ra bao nhiêu, và thời gian chạy thật.
+- Giai đoạn 1 giờ chạy tối đa 300 epoch, dừng sớm khi loss train trên R1 không cải thiện 5 epoch liên tiếp (không tính 5 epoch warmup), rồi nạp lại trọng số của epoch tốt nhất; cosine lr vẫn tính theo 300 epoch. Số epoch thực chạy, epoch tốt nhất và lr lúc dừng ghi trong `stage1_run` của `pre_stats`. Cache θ_pre sinh bằng cách huấn luyện khác bị từ chối (`stage1_signature`).
+- Báo cáo có mục 2b và `results/compare_retrain.csv`: L/A trên F, R, V, test của từng luật dừng đặt cạnh dòng RETRAIN (trung bình M=3 oracle), kèm IQR và chênh lệch có dấu.
+- Chưa chạy trên CIFAR-10 thật với cấu hình mới, nên chưa biết: θ_pre có đạt 90% không, cổng "F đã được học" đạt ở w_F nào, Cổng 1 (e_pre/nu) ra bao nhiêu, và thời gian chạy thật.
 - Ước tính compute trong kịch bản (10-15 giờ GPU cho Phase 1) chưa đo; nên chạy từng seed trong session riêng.
 - Tiền đề "loss trước khi học F ~ loss của oracle" là giả thuyết cần đo bằng Cổng 1, không phải điều đã biết.

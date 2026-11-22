@@ -12,7 +12,7 @@ from ralm.data import Data
 
 from . import analyze as A
 from .config import FTYPES, MAIN_FTYPE, METHODS, GATE1_RATIO, Paths, get_cfg
-from .train import prepare_config, prepare_seed
+from .train import check_stage1, prepare_config, prepare_seed
 from .unlearn import applicable, collect
 
 
@@ -36,6 +36,7 @@ def main(argv=None):
     a = _args(argv)
     cfg = get_cfg(a.profile, e2=a.e2, n_epochs=a.n_epochs, data_root=a.data_root)
     paths = Paths(a.out)
+    check_stage1(cfg, paths, a.seeds)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[run] {a.cmd} profile={cfg.name} device={device} seeds={a.seeds} ftypes={a.ftypes} methods={a.methods}")
     data = Data(cfg.as_profile(), device) if a.cmd != "analyze" else None
