@@ -56,7 +56,7 @@ class Cfg:
     rsub_n: int = 5000
     # unlearning: đơn vị là EPOCH, theo định nghĩa của code gốc từng phương pháp (xem unlearn.py)
     n_epochs: int | None = None      # số epoch CỐ ĐỊNH (chỉ để kiểm thử / ép tay). None = chạy đến khi luật dừng quyết định
-    max_epochs: int = 30             # trần an toàn khi n_epochs=None (tarun luôn 2 epoch)
+    max_epochs: int | None = None    # None = KHÔNG có trần (mặc định, theo yêu cầu). Chỉ đặt khi người dùng tự muốn
     fixed_k: tuple = (1, 2, 3, 5, 10)   # R2-fixed: dừng ở epoch K (K vượt quỹ đạo -> lấy epoch cuối, cờ clipped)
 
     def as_profile(self) -> _BaseProfile:
@@ -74,7 +74,7 @@ PROFILES: dict[str, Cfg] = {
     "fake": Cfg(name="fake", e1=20, warm1=1, lr1=0.05, lr2=0.03, min_pre_acc=None, e2=12, batch=64, width=8,
                 amp=False,
                 eval_batch=512, v_size=150, fake_train=1500, fake_test=300, f_small=20, f_large=60,
-                rsub_n=200, max_epochs=6, fixed_k=(1, 2, 4)),
+                rsub_n=200, max_epochs=6, fixed_k=(1, 2, 4)),      # profile giả có trần 6 chỉ để test không chạy vô hạn
 }
 
 

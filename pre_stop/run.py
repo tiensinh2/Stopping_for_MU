@@ -29,7 +29,7 @@ def _args(argv=None):
     p.add_argument("--e2", type=int, default=None)
     p.add_argument("--n_epochs", type=int, default=None,
                    help="ép số epoch cố định, chạy đủ (mặc định: chạy đến khi mọi luật PRE online đã quyết định)")
-    p.add_argument("--max_epochs", type=int, default=None, help="trần an toàn khi không ép n_epochs (mặc định 30)")
+    p.add_argument("--max_epochs", type=int, default=None, help="trần tuỳ chọn (mặc định: KHÔNG có trần)")
     p.add_argument("--force", action="store_true")
     return p.parse_args(argv)
 

@@ -19,6 +19,7 @@ CÁCH LY (§0.4.1): file này không import eval_oracle và không đụng tới
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import time
 
@@ -39,10 +40,10 @@ BN_MODE = {"ga": "train", "ft": "train", "salun": "train", "scrub": "train (stud
            "tarun": "train (noise: eval)"}
 
 
-def n_epochs_for(cfg: Cfg, method: str) -> int:
-    """Số epoch TỐI ĐA của quỹ đạo. Tarun/UNSIR gốc đúng 2 epoch (impair, repair) và không kéo dài được.
-    cfg.n_epochs (nếu đặt) là số epoch cố định, chạy đủ không dừng sớm; nếu None: chạy đến khi mọi luật online
-    đã quyết định, tối đa cfg.max_epochs (trần an toàn; có thể vượt 10 epoch của code gốc)."""
+def n_epochs_for(cfg: Cfg, method: str) -> int | None:
+    """Số epoch của quỹ đạo. Tarun/UNSIR gốc đúng 2 epoch (impair, repair) và không kéo dài được.
+    cfg.n_epochs (nếu đặt) là số epoch cố định, chạy đủ không dừng sớm. Nếu None: KHÔNG có trần, chạy đến khi mọi
+    luật PRE online đã quyết định (hoặc phân kỳ); cfg.max_epochs chỉ là trần tuỳ chọn do người dùng tự đặt."""
     if method == "tarun":
         return 2
     return cfg.n_epochs or cfg.max_epochs
@@ -54,7 +55,7 @@ _PRE_STOP_RULES = ("R6-PRE-hit", "R7-PRE-J", "R8-PRE-sample", "R9-PRE-median-hit
 def _online_rules_for_stop(paths, seed, ftype, L_R0, L_V0) -> list:
     """Các luật PRE online (R6-R9, mỗi luật ở các chế độ đích none/V/log). Chỉ để quyết định khi nào ngừng thu
     quỹ đạo: không dùng oracle / test. Quỹ đạo kết thúc khi tất cả đã chọn xong checkpoint của mình.
-    Không chờ R3/R4/R5/R12: chúng thường không kích hoạt (vd. F không bao giờ bị quên) nên sẽ luôn chạy đến trần;
+    Không chờ R3/R4/R5/R12: chúng thường không kích hoạt (vd. F không bao giờ bị quên) nên sẽ không bao giờ dừng;
     các baseline đó được chấm trên cùng quỹ đạo, nếu chưa kích hoạt thì dùng finish() (ghi cờ triggered=0)."""
     from . import rules as R
     from .pre_info import load_P
@@ -380,10 +381,11 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
         pending = [r for r in pending if r.feed(k, sn) is None]
 
     feed_rules(0, row0)                     # giống run_online: luật thấy snapshot 0, 1, 2, ... theo thứ tự
-    log(f"[traj] {rid} |F|={len(sets.f)} tối đa {n_ep} epoch "
-        f"({'cố định' if fixed else 'chạy đến khi mọi luật online đã quyết định'}; code gốc: {method}, BN {BN_MODE[method]})")
+    log(f"[traj] {rid} |F|={len(sets.f)} "
+        f"{n_ep if n_ep else 'không giới hạn'} epoch "
+        f"({'cố định' if fixed else 'chạy đến khi mọi luật PRE online đã quyết định'}; code gốc: {method}, BN {BN_MODE[method]})")
     diverged, stop_reason, ep = None, ("fixed_epochs" if fixed else "max_epochs"), 0
-    for ep in range(1, n_ep + 1):
+    for ep in (range(1, n_ep + 1) if n_ep else itertools.count(1)):
         try:
             last = um.epoch()
             row = snapshot(ep, time.time() - t0, last)
@@ -400,8 +402,8 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
                 stop_reason = "all_rules_decided"
                 log(f"[traj] {rid} mọi luật PRE online đã quyết định ở epoch {ep}: dừng quỹ đạo")
                 break
-    if stop_reason == "max_epochs":
-        log(f"[traj] {rid} chạm trần {n_ep} epoch; {len(pending)}/{len(stop_rules)} luật chưa quyết định")
+    if stop_reason == "max_epochs":      # chỉ xảy ra khi người dùng tự đặt --max_epochs
+        log(f"[traj] {rid} chạm trần {n_ep} epoch do người dùng đặt; {len(pending)}/{len(stop_rules)} luật chưa quyết định")
     np.savez_compressed(arr_p, epochs=np.array(arrays["epochs"]), loss_F=np.stack(arrays["loss_F"]),
                         loss_V=np.stack(arrays["loss_V"]), logits_F=np.stack(arrays["logits_F"]),
                         logits_V=np.stack(arrays["logits_V"]), f_idx=sets.f_np, v_idx=sets.v_np,
