@@ -27,14 +27,16 @@ def _args(argv=None):
     p.add_argument("--methods", nargs="+", default=list(METHODS))
     p.add_argument("--us", type=int, nargs="+", default=[0])
     p.add_argument("--e2", type=int, default=None)
-    p.add_argument("--n_epochs", type=int, default=None, help="số epoch unlearning (mặc định: số epoch của code gốc)")
+    p.add_argument("--n_epochs", type=int, default=None,
+                   help="ép số epoch cố định, chạy đủ (mặc định: chạy đến khi mọi luật PRE online đã quyết định)")
+    p.add_argument("--max_epochs", type=int, default=None, help="trần an toàn khi không ép n_epochs (mặc định 30)")
     p.add_argument("--force", action="store_true")
     return p.parse_args(argv)
 
 
 def main(argv=None):
     a = _args(argv)
-    cfg = get_cfg(a.profile, e2=a.e2, n_epochs=a.n_epochs, data_root=a.data_root)
+    cfg = get_cfg(a.profile, e2=a.e2, n_epochs=a.n_epochs, max_epochs=a.max_epochs, data_root=a.data_root)
     paths = Paths(a.out)
     check_stage1(cfg, paths, a.seeds)
     if a.cmd in ("cfg", "gate1", "traj"):

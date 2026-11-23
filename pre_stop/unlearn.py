@@ -29,7 +29,7 @@ import torch.nn.functional as F
 from ralm.eval_core import seed_all
 from ralm.model import make_model
 
-from .config import ORIG_EPOCHS, Cfg
+from .config import Cfg
 from .data import load_sets
 from .measure import measure, test_metrics
 
@@ -40,10 +40,32 @@ BN_MODE = {"ga": "train", "ft": "train", "salun": "train", "scrub": "train (stud
 
 
 def n_epochs_for(cfg: Cfg, method: str) -> int:
-    """Số epoch của quỹ đạo. Tarun/UNSIR gốc đúng 2 epoch (impair, repair) và không kéo dài được."""
+    """Số epoch TỐI ĐA của quỹ đạo. Tarun/UNSIR gốc đúng 2 epoch (impair, repair) và không kéo dài được.
+    cfg.n_epochs (nếu đặt) là số epoch cố định, chạy đủ không dừng sớm; nếu None: chạy đến khi mọi luật online
+    đã quyết định, tối đa cfg.max_epochs (trần an toàn; có thể vượt 10 epoch của code gốc)."""
     if method == "tarun":
         return 2
-    return cfg.n_epochs or ORIG_EPOCHS
+    return cfg.n_epochs or cfg.max_epochs
+
+
+_PRE_STOP_RULES = ("R6-PRE-hit", "R7-PRE-J", "R8-PRE-sample", "R9-PRE-median-hit")
+
+
+def _online_rules_for_stop(paths, seed, ftype, L_R0, L_V0) -> list:
+    """Các luật PRE online (R6-R9, mỗi luật ở các chế độ đích none/V/log). Chỉ để quyết định khi nào ngừng thu
+    quỹ đạo: không dùng oracle / test. Quỹ đạo kết thúc khi tất cả đã chọn xong checkpoint của mình.
+    Không chờ R3/R4/R5/R12: chúng thường không kích hoạt (vd. F không bao giờ bị quên) nên sẽ luôn chạy đến trần;
+    các baseline đó được chấm trên cùng quỹ đạo, nếu chưa kích hoạt thì dùng finish() (ghi cờ triggered=0)."""
+    from . import rules as R
+    from .pre_info import load_P
+    P = load_P(paths, seed, ftype)
+    out = []
+    for mode in ("none", "V", "log"):
+        if mode == "log" and P.get("loss_F_log") is None:
+            continue
+        ctx = R.Ctx(R.make_target(P, mode, L_V0), L_R0, L_V0)
+        out += [r for n, r in R.online_rules(ctx).items() if n in _PRE_STOP_RULES]
+    return out
 
 
 def _batches(idx: torch.Tensor, bs: int) -> list:
@@ -303,8 +325,11 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
     rid = paths.run_id(method, ftype, seed, u)
     jl, arr_p, meta_p, test_p = paths.traj_jsonl(rid), paths.traj_arrays(rid), paths.meta(rid), paths.traj_test(rid)
     if meta_p.exists() and arr_p.exists() and not force:
-        log(f"[traj] {rid} đã xong, bỏ qua")
-        return json.loads(meta_p.read_text(encoding="utf-8"))
+        old = json.loads(meta_p.read_text(encoding="utf-8"))
+        if "stop_reason" in old:
+            log(f"[traj] {rid} đã xong, bỏ qua")
+            return old
+        log(f"[traj] {rid} là quỹ đạo kiểu cũ (cắt cứng số epoch, không có stop_reason): chạy lại")
     sets = load_sets(paths, data, cfg, seed, ftype)
     seed_all(seed + 1000 * u)
     model = _load_theta0(cfg, paths, seed, ftype, device)
@@ -344,9 +369,20 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
         return row
 
     t0 = time.time()
-    snapshot(0, 0.0, None)
-    log(f"[traj] {rid} |F|={len(sets.f)} {n_ep} epoch (code gốc: {method}, BN {BN_MODE[method]})")
-    diverged = None
+    row0 = snapshot(0, 0.0, None)
+    fixed = cfg.n_epochs is not None or method == "tarun"
+    stop_rules = [] if fixed else _online_rules_for_stop(paths, seed, ftype, row0["L_R"], row0["L_V"])
+    pending = list(stop_rules)
+
+    def feed_rules(k: int, sn_row: dict):
+        nonlocal pending
+        sn = dict(sn_row, loss_F=arrays["loss_F"][-1].astype(np.float64))
+        pending = [r for r in pending if r.feed(k, sn) is None]
+
+    feed_rules(0, row0)                     # giống run_online: luật thấy snapshot 0, 1, 2, ... theo thứ tự
+    log(f"[traj] {rid} |F|={len(sets.f)} tối đa {n_ep} epoch "
+        f"({'cố định' if fixed else 'chạy đến khi mọi luật online đã quyết định'}; code gốc: {method}, BN {BN_MODE[method]})")
+    diverged, stop_reason, ep = None, ("fixed_epochs" if fixed else "max_epochs"), 0
     for ep in range(1, n_ep + 1):
         try:
             last = um.epoch()
@@ -355,13 +391,23 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
                 f"A_F {row['A_F']:.3f} upd {um.n_updates} [{time.time() - t0:.0f}s]")
         except FloatingPointError as e:     # ghi rõ, không bỏ qua im lặng (§17.3)
             diverged = {"epoch": ep, "error": str(e)}
+            stop_reason = "diverged"
             log(f"[traj] {rid} PHÂN KỲ ở epoch {ep}: quỹ đạo bị cắt ở đây (ghi cờ diverged)")
             break
+        if stop_rules:
+            feed_rules(ep, row)
+            if not pending:
+                stop_reason = "all_rules_decided"
+                log(f"[traj] {rid} mọi luật PRE online đã quyết định ở epoch {ep}: dừng quỹ đạo")
+                break
+    if stop_reason == "max_epochs":
+        log(f"[traj] {rid} chạm trần {n_ep} epoch; {len(pending)}/{len(stop_rules)} luật chưa quyết định")
     np.savez_compressed(arr_p, epochs=np.array(arrays["epochs"]), loss_F=np.stack(arrays["loss_F"]),
                         loss_V=np.stack(arrays["loss_V"]), logits_F=np.stack(arrays["logits_F"]),
                         logits_V=np.stack(arrays["logits_V"]), f_idx=sets.f_np, v_idx=sets.v_np,
                         f_y=data.ytr_np[sets.f_np], v_y=data.ytr_np[sets.v_np])
-    meta = {"run_id": rid, "method": method, "ftype": ftype, "seed": seed, "u": u, "n_epochs": n_ep,
+    meta = {"run_id": rid, "method": method, "ftype": ftype, "seed": seed, "u": u, "n_epochs": ep if stop_reason != "diverged" else ep - 1,
+            "max_epochs": n_ep, "stop_reason": stop_reason, "n_rules_undecided": len(pending),
             "n_snapshots": len(arrays["epochs"]), "n_updates": um.n_updates, "diverged": diverged,
             "wall_s": time.time() - t0, "arrays": arr_p.name, "bn_mode": BN_MODE[method]}
     meta_p.write_text(json.dumps(meta, indent=2), encoding="utf-8")

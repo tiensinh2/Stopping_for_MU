@@ -159,6 +159,19 @@ def _decisions(paths, cfg, seed=0, ft="random-450", method="ga"):
     return out
 
 
+def test_trajectory_runs_until_pre_rules_decide(mini_run):
+    cfg, paths = get_cfg("fake"), Paths(mini_run)
+    rid = paths.run_id("ga", "random-450", 0, 0)
+    meta = json.loads(paths.meta(rid).read_text(encoding="utf-8"))
+    assert meta["stop_reason"] in ("all_rules_decided", "max_epochs", "diverged")
+    assert meta["n_snapshots"] == meta["n_epochs"] + 1 <= cfg.max_epochs + 1
+    if meta["stop_reason"] == "all_rules_decided":
+        assert meta["n_rules_undecided"] == 0
+        for key, res in _decisions(paths, cfg).items():
+            if key[1] in ("R6-PRE-hit", "R7-PRE-J", "R8-PRE-sample", "R9-PRE-median-hit"):
+                assert res["triggered"] and res["decided_at"] <= meta["n_epochs"]
+
+
 def test_rules_independent_of_oracle(mini_run):
     cfg, paths = get_cfg("fake"), Paths(mini_run)
     before = _decisions(paths, cfg)
@@ -264,7 +277,8 @@ def test_salun_mask_is_top_half():
 def test_epoch_count_and_tarun_two_epochs():
     from pre_stop.unlearn import applicable, n_epochs_for
     cfg = get_cfg("fake")
-    assert n_epochs_for(get_cfg("kaggle"), "ga") == 10 and n_epochs_for(cfg, "scrub") == 4
+    assert n_epochs_for(get_cfg("kaggle"), "ga") == 30 and n_epochs_for(cfg, "scrub") == 6     # trần, không phải số cố định
+    assert n_epochs_for(get_cfg("kaggle", n_epochs=12), "ga") == 12
     assert n_epochs_for(get_cfg("kaggle"), "tarun") == 2
     assert applicable("tarun", "class-0") and not applicable("tarun", "random-450")
     assert applicable("ft", "random-450") and not applicable("ft", "class-0")
