@@ -40,13 +40,43 @@ BN_MODE = {"ga": "train", "ft": "train", "salun": "train", "scrub": "train (stud
            "tarun": "train (noise: eval)"}
 
 
+LR_GRID_METHODS = ("ga", "scrub")       # chỉ hai phương pháp này có lưới lr (EXPLORATORY), tên dạng "ga@0.1"
+
+
+def split_method(name: str) -> tuple[str, float]:
+    """"ga@0.1" -> ("ga", 0.1): phương pháp gốc + hệ số nhân lr so với lr của code gốc. "ga" -> ("ga", 1.0)."""
+    base, _, sc = name.partition("@")
+    scale = float(sc) if sc else 1.0
+    if base not in METHOD_CLS:
+        raise ValueError(f"phương pháp không biết: {name}")
+    if sc and base not in LR_GRID_METHODS:
+        raise ValueError(f"lưới lr chỉ có cho {LR_GRID_METHODS}, không có cho {base}")
+    if scale <= 0:
+        raise ValueError("hệ số lr phải > 0")
+    return base, scale
+
+
 def n_epochs_for(cfg: Cfg, method: str) -> int | None:
     """Số epoch của quỹ đạo. Tarun/UNSIR gốc đúng 2 epoch (impair, repair) và không kéo dài được.
     cfg.n_epochs (nếu đặt) là số epoch cố định, chạy đủ không dừng sớm. Nếu None: KHÔNG có trần, chạy đến khi mọi
     luật PRE online đã quyết định (hoặc phân kỳ); cfg.max_epochs chỉ là trần tuỳ chọn do người dùng tự đặt."""
-    if method == "tarun":
+    if method.partition("@")[0] == "tarun":
         return 2
     return cfg.n_epochs or cfg.max_epochs
+
+
+def plateau(rows: list[dict], w: int, tol: float) -> bool:
+    """Quỹ đạo "đứng yên": trong w epoch gần nhất, L_F, L_R, L_V đều có (max-min) <= tol * max(|trung bình|, 0.1).
+    KHÔNG phải trần epoch: chỉ dừng khi quỹ đạo không còn thay đổi (các luật không thể quyết định khác đi nữa).
+    Tiêu chí này do người triển khai đề xuất; không dùng oracle / test."""
+    if w is None or len(rows) < w + 1:
+        return False
+    last = rows[-(w + 1):]
+    for k in ("L_F", "L_R", "L_V"):
+        v = np.array([r[k] for r in last], dtype=np.float64)
+        if v.max() - v.min() > tol * max(abs(v.mean()), 0.1):
+            return False
+    return True
 
 
 _PRE_STOP_RULES = ("R6-PRE-hit", "R7-PRE-J", "R8-PRE-sample", "R9-PRE-median-hit")
@@ -115,9 +145,9 @@ def _sgd(model, lr, wd):
 class GA(Base):
     name = "ga"
 
-    def __init__(self, *a):
+    def __init__(self, *a, lr_scale: float = 1.0):
         super().__init__(*a)
-        self.opt = _sgd(self.model, 0.01, 5e-4)
+        self.opt = _sgd(self.model, 0.01 * lr_scale, 5e-4)       # lr_scale != 1: lưới lr EXPLORATORY
 
     def epoch(self) -> float:
         self.model.train()
@@ -207,12 +237,13 @@ class Scrub(Base):
     DECAY_EPOCHS, DECAY_RATE = (5, 8, 9), 0.1
     BS_R, BS_F = 32, 64
 
-    def __init__(self, *a):
+    def __init__(self, *a, lr_scale: float = 1.0):
         super().__init__(*a)
         self.teacher = copy.deepcopy(self.model).eval()
         for p in self.teacher.parameters():
             p.requires_grad_(False)
-        self.opt = torch.optim.Adam(self.model.parameters(), lr=self.LR, weight_decay=self.WD)
+        self.lr0 = self.LR * lr_scale                             # lr_scale != 1: lưới lr EXPLORATORY
+        self.opt = torch.optim.Adam(self.model.parameters(), lr=self.lr0, weight_decay=self.WD)
         self.ep = 0
 
     def _kl(self, s, t):
@@ -235,7 +266,7 @@ class Scrub(Base):
         k = sum(self.ep > e for e in self.DECAY_EPOCHS)           # sgda_adjust_learning_rate
         if k > 0:
             for g in self.opt.param_groups:
-                g["lr"] = self.LR * (self.DECAY_RATE ** k)
+                g["lr"] = self.lr0 * (self.DECAY_RATE ** k)
         self.model.train()
         self.teacher.eval()
         last = 0.0
@@ -308,6 +339,7 @@ TARUN_FTYPES = ("class-0",)       # UNSIR gốc chỉ quên theo lớp: không �
 
 
 def applicable(method: str, ftype: str, main_ftype: str = "random-450") -> bool:
+    method = method.partition("@")[0]
     if method == "tarun":
         return ftype in TARUN_FTYPES
     if method == "ft":
@@ -334,7 +366,8 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
     sets = load_sets(paths, data, cfg, seed, ftype)
     seed_all(seed + 1000 * u)
     model = _load_theta0(cfg, paths, seed, ftype, device)
-    um = METHOD_CLS[method](cfg, data, sets, model, device)
+    base, scale = split_method(method)
+    um = METHOD_CLS[base](cfg, data, sets, model, device, **({"lr_scale": scale} if base in LR_GRID_METHODS else {}))
     n_ep = n_epochs_for(cfg, method)
     jl.parent.mkdir(parents=True, exist_ok=True)
     jl.write_text("", encoding="utf-8")
@@ -371,7 +404,8 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
 
     t0 = time.time()
     row0 = snapshot(0, 0.0, None)
-    fixed = cfg.n_epochs is not None or method == "tarun"
+    fixed = cfg.n_epochs is not None or base == "tarun"
+    rows = [row0]
     stop_rules = [] if fixed else _online_rules_for_stop(paths, seed, ftype, row0["L_R"], row0["L_V"])
     pending = list(stop_rules)
 
@@ -383,7 +417,8 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
     feed_rules(0, row0)                     # giống run_online: luật thấy snapshot 0, 1, 2, ... theo thứ tự
     log(f"[traj] {rid} |F|={len(sets.f)} "
         f"{n_ep if n_ep else 'không giới hạn'} epoch "
-        f"({'cố định' if fixed else 'chạy đến khi mọi luật PRE online đã quyết định'}; code gốc: {method}, BN {BN_MODE[method]})")
+        f"({'cố định' if fixed else 'chạy đến khi mọi luật PRE online đã quyết định'}; code gốc: {base}, "
+        f"hệ số lr {scale:g}{' [EXPLORATORY]' if scale != 1 else ''}, BN {BN_MODE[base]})")
     diverged, stop_reason, ep = None, ("fixed_epochs" if fixed else "max_epochs"), 0
     for ep in (range(1, n_ep + 1) if n_ep else itertools.count(1)):
         try:
@@ -396,11 +431,17 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
             stop_reason = "diverged"
             log(f"[traj] {rid} PHÂN KỲ ở epoch {ep}: quỹ đạo bị cắt ở đây (ghi cờ diverged)")
             break
+        rows.append(row)
         if stop_rules:
             feed_rules(ep, row)
             if not pending:
                 stop_reason = "all_rules_decided"
                 log(f"[traj] {rid} mọi luật PRE online đã quyết định ở epoch {ep}: dừng quỹ đạo")
+                break
+            if cfg.plateau_w and plateau(rows, cfg.plateau_w, cfg.plateau_tol):
+                stop_reason = "plateau"
+                log(f"[traj] {rid} quỹ đạo đứng yên {cfg.plateau_w} epoch (tol {cfg.plateau_tol}) ở epoch {ep}: dừng "
+                    f"({len(pending)}/{len(stop_rules)} luật chưa quyết định)")
                 break
     if stop_reason == "max_epochs":      # chỉ xảy ra khi người dùng tự đặt --max_epochs
         log(f"[traj] {rid} chạm trần {n_ep} epoch do người dùng đặt; {len(pending)}/{len(stop_rules)} luật chưa quyết định")
@@ -408,9 +449,9 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
                         loss_V=np.stack(arrays["loss_V"]), logits_F=np.stack(arrays["logits_F"]),
                         logits_V=np.stack(arrays["logits_V"]), f_idx=sets.f_np, v_idx=sets.v_np,
                         f_y=data.ytr_np[sets.f_np], v_y=data.ytr_np[sets.v_np])
-    meta = {"run_id": rid, "method": method, "ftype": ftype, "seed": seed, "u": u, "n_epochs": ep if stop_reason != "diverged" else ep - 1,
+    meta = {"run_id": rid, "method": method, "base_method": base, "lr_scale": scale, "ftype": ftype, "seed": seed, "u": u, "n_epochs": ep if stop_reason != "diverged" else ep - 1,
             "max_epochs": n_ep, "stop_reason": stop_reason, "n_rules_undecided": len(pending),
             "n_snapshots": len(arrays["epochs"]), "n_updates": um.n_updates, "diverged": diverged,
-            "wall_s": time.time() - t0, "arrays": arr_p.name, "bn_mode": BN_MODE[method]}
+            "wall_s": time.time() - t0, "arrays": arr_p.name, "bn_mode": BN_MODE[base]}
     meta_p.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta

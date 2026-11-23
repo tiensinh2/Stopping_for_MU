@@ -13,7 +13,7 @@ from ralm.data import Data
 from . import analyze as A
 from .config import FTYPES, MAIN_FTYPE, METHODS, GATE1_RATIO, Paths, get_cfg
 from .train import check_stage1, prepare_config, prepare_seed, require_pre
-from .unlearn import applicable, collect
+from .unlearn import LR_GRID_METHODS, applicable, collect
 
 
 def _args(argv=None):
@@ -30,14 +30,27 @@ def _args(argv=None):
     p.add_argument("--n_epochs", type=int, default=None,
                    help="ép số epoch cố định, chạy đủ (mặc định: chạy đến khi mọi luật PRE online đã quyết định)")
     p.add_argument("--max_epochs", type=int, default=None, help="trần tuỳ chọn (mặc định: KHÔNG có trần)")
+    p.add_argument("--tag", default="", help="ghi báo cáo vào results_<tag>/ thay vì results/ (vd. lưới lr)")
+    p.add_argument("--lr_scales", type=float, nargs="+", default=None,
+                   help="[EXPLORATORY] lưới lr: với mỗi hệ số s, chạy thêm ga@s và scrub@s (lr = s * lr của code gốc) "
+                        "thay cho --methods; báo cáo ghi vào results_<tag>/ (nên đặt --tag)")
+    p.add_argument("--plateau_w", type=int, default=None,
+                   help="tuỳ chọn: dừng quỹ đạo khi L_F, L_R, L_V đứng yên W epoch liền (mặc định TẮT, không có trần)")
+    p.add_argument("--plateau_tol", type=float, default=None)
     p.add_argument("--force", action="store_true")
     return p.parse_args(argv)
 
 
 def main(argv=None):
     a = _args(argv)
-    cfg = get_cfg(a.profile, e2=a.e2, n_epochs=a.n_epochs, max_epochs=a.max_epochs, data_root=a.data_root)
-    paths = Paths(a.out)
+    cfg = get_cfg(a.profile, e2=a.e2, n_epochs=a.n_epochs, max_epochs=a.max_epochs, data_root=a.data_root,
+                  plateau_w=a.plateau_w, plateau_tol=a.plateau_tol)
+    if a.lr_scales:
+        # lr gốc (ga, scrub; dùng lại quỹ đạo đã có nếu có) đứng cạnh các điểm lưới để báo cáo đối chiếu cùng một bảng
+        a.methods = list(LR_GRID_METHODS) + [f"{m}@{s:g}" for s in a.lr_scales if s != 1 for m in LR_GRID_METHODS]
+        if not a.tag:
+            a.tag = "lrgrid"
+    paths = Paths(a.out, results="results" + (f"_{a.tag}" if a.tag else ""))
     check_stage1(cfg, paths, a.seeds)
     if a.cmd in ("cfg", "gate1", "traj"):
         require_pre(paths, a.seeds)

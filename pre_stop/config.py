@@ -57,6 +57,10 @@ class Cfg:
     # unlearning: đơn vị là EPOCH, theo định nghĩa của code gốc từng phương pháp (xem unlearn.py)
     n_epochs: int | None = None      # số epoch CỐ ĐỊNH (chỉ để kiểm thử / ép tay). None = chạy đến khi luật dừng quyết định
     max_epochs: int | None = None    # None = KHÔNG có trần (mặc định, theo yêu cầu). Chỉ đặt khi người dùng tự muốn
+    # Tuỳ chọn (mặc định TẮT): dừng khi quỹ đạo "đứng yên" W epoch liền (L_F, L_R, L_V đổi < tol tương đối). Không phải trần
+    # epoch, nhưng là tiêu chí do người triển khai đề xuất: chỉ bật khi người dùng đồng ý (dùng cho lưới lr exploratory).
+    plateau_w: int | None = None
+    plateau_tol: float = 0.01
     fixed_k: tuple = (1, 2, 3, 5, 10)   # R2-fixed: dừng ở epoch K (K vượt quỹ đạo -> lấy epoch cuối, cờ clipped)
 
     def as_profile(self) -> _BaseProfile:
@@ -84,8 +88,9 @@ def get_cfg(name: str, **over) -> Cfg:
 
 
 class Paths:
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, results: str = "results"):
         self.root = Path(root)
+        self._results = results
 
     def _p(self, *a): return self.root.joinpath(*a)
     def pre_ckpt(self, s): return self._p("ckpt", "pre", f"seed{s}.pth")
@@ -104,4 +109,4 @@ class Paths:
     def traj_test(self, rid): return self._p("logs", f"traj_{rid}_test.jsonl")   # niêm phong (§0.4.3)
     def meta(self, rid): return self._p("logs", f"traj_{rid}_meta.json")
     @property
-    def results(self): return self._p("results")
+    def results(self): return self._p(self._results)

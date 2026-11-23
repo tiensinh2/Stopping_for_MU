@@ -36,6 +36,14 @@ snapshot lấy ở cuối mỗi epoch (và epoch 0 = θ0). Số bước tối ư
 7. **Tarun:** nhãn noise là lớp bị quên (như trong notebook: `class_num = 0` cố định, tôi dùng đúng lớp `c`; **đây là khác biệt so với notebook** vì notebook gán nhãn 0 cho mọi noise, hợp lý chỉ khi quên 1 lớp = lớp 0). Với `class-0` hai cách trùng nhau. Mẫu retain: tối đa 1000 mẫu mỗi lớp giữ lại, đúng notebook.
 8. **AMP bật trên GPU** cho mọi phương pháp (code gốc dùng fp32). Đây là khác biệt về số học, không về thuật toán.
 9. **Chưa kiểm chứng:** các hằng số trên tôi đọc từ code, **chưa đối chiếu với bài báo**. SCRUB trong kịch bản có `msteps`/`lr` có thể khác bài báo gốc.
+## Lưới lr cho `ga` và `scrub` (EXPLORATORY, không phải kết quả chính)
+- Lr của code gốc (`ga` SGD 0,01; `scrub` Adam 5e-4, lịch ×0,1 sau epoch 5, 8, 9) vẫn là **mặc định chính**. Lưới chỉ là bước chẩn đoán: lr gốc được chọn cho mô hình/dữ liệu của bài báo, chưa chắc hợp θ_pre của ta.
+- Cách chạy: `python -m pre_stop.run traj --lr_scales 0.1 0.01 --ftypes random-450 [--plateau_w 10] --tag lrgrid`, rồi `analyze` với cùng tham số. Mỗi hệ số `s` tạo phương pháp `ga@s` và `scrub@s` (lr = s × lr gốc, mọi thứ khác giữ nguyên, kể cả lịch giảm lr của SCRUB). `ga` và `scrub` (s = 1) được dùng lại để đặt cạnh. Chỉ `ga` và `scrub` có lưới; `salun`, `tarun`, `ft` giữ nguyên.
+- Báo cáo ghi vào `results_<tag>/` (mặc định `results_lrgrid/`), không ghi đè `results/`. Quỹ đạo lưu dưới tên `ga@0.1_random-450_seed0_u0`.
+- Quỹ đạo vẫn **không có trần epoch**. `--plateau_w W` (mặc định TẮT) là tiêu chí **do tôi đề xuất**, không phải trần: dừng khi L_F, L_R, L_V cùng đổi < `--plateau_tol` (mặc định 1%) tương đối trong W epoch liền (`stop_reason = plateau`). Lý do: với lr rất nhỏ hoặc quỹ đạo phẳng, luật PRE có thể không bao giờ quyết định và quỹ đạo sẽ chạy vô hạn. Không dùng oracle/test. Nếu không bật, việc dừng chỉ do luật PRE hoặc phân kỳ.
+- **Lưu ý khi đọc:** chọn lr phải dựa trên tiêu chí không oracle (L_V không vượt rào G_V, L_F tiến về P). Chọn lr theo khoảng cách tới retrain rồi báo như kết quả chính là vi phạm quy tắc. Báo median và IQR, ghi nhãn exploratory. Chỉ chạy 1 seed nên chưa có IQR qua seed.
+
+
 
 ## Đã cài (theo kịch bản)
 - R0, R1 (rollback, tách riêng), R2-K, R3, R4, R5, R6-R9 (x 2 đích `none`, `V`), R10, R11, R12, R14, R15.

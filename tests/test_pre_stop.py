@@ -284,6 +284,58 @@ def test_epoch_count_and_tarun_two_epochs():
     assert applicable("ft", "random-450") and not applicable("ft", "class-0")
 
 
+# ---------------------------------------------------------------- lưới lr (EXPLORATORY) cho ga, scrub
+def test_lr_grid_scales_lr_and_keeps_original_schedule():
+    from pre_stop import unlearn as U
+    cfg, data, sets = _epoch_env(None)
+    dev = torch.device("cpu")
+    ga = U.GA(cfg, data, sets, _fresh_model(cfg), dev, lr_scale=0.1)
+    assert ga.opt.param_groups[0]["lr"] == pytest.approx(0.001)
+    assert U.GA(cfg, data, sets, _fresh_model(cfg), dev).opt.param_groups[0]["lr"] == pytest.approx(0.01)
+    sc = U.Scrub(cfg, data, sets, _fresh_model(cfg), dev, lr_scale=0.1)
+    lrs = []
+    for _ in range(6):
+        sc.epoch()
+        lrs.append(sc.opt.param_groups[0]["lr"])
+    assert lrs[0] == pytest.approx(5e-5) and lrs[4] == pytest.approx(5e-5) and lrs[5] == pytest.approx(5e-6)  # lịch ×0.1 sau epoch 5, 8, 9 giữ nguyên
+
+
+def test_lr_grid_method_names():
+    from pre_stop.unlearn import applicable, n_epochs_for, split_method
+    assert split_method("ga") == ("ga", 1.0) and split_method("scrub@0.01") == ("scrub", 0.01)
+    for bad in ("salun@0.1", "tarun@0.1", "ft@0.1", "xx"):
+        with pytest.raises(ValueError):
+            split_method(bad)
+    assert applicable("scrub@0.1", "class-0") and n_epochs_for(get_cfg("kaggle"), "ga@0.1") is None
+
+
+def test_plateau_is_opt_in_and_not_an_epoch_cap():
+    from pre_stop.unlearn import plateau
+    flat = [{"L_F": 0.5, "L_R": 0.3, "L_V": 0.6}] * 11
+    assert plateau(flat, 10, 0.01) and not plateau(flat[:10], 10, 0.01)
+    moving = flat[:-1] + [{"L_F": 0.9, "L_R": 0.3, "L_V": 0.6}]
+    assert not plateau(moving, 10, 0.01)
+    assert get_cfg("kaggle").plateau_w is None            # mặc định TẮT
+
+
+def test_lr_grid_trajectory_runs_and_reports_separately(tmp_path):
+    """ga@0.1 chạy trên cùng θ0, ghi báo cáo vào results_<tag>/, không đụng results/. Pipeline riêng (không dùng chung
+    mini_run vì một test khác cố ý sửa P trong đó)."""
+    from pre_stop.run import main
+    out = str(tmp_path)
+    common = ["--profile", "fake", "--out", out, "--seeds", "0", "--ftypes", "random-450"]
+    assert main(["pre"] + common) == 0 and main(["cfg"] + common) == 0
+    assert main(["traj", "--lr_scales", "0.1"] + common) == 0
+    paths = Paths(out)
+    meta = json.loads(paths.meta(paths.run_id("ga@0.1", "random-450", 0, 0)).read_text(encoding="utf-8"))
+    assert meta["base_method"] == "ga" and meta["lr_scale"] == 0.1 and meta["stop_reason"]
+    assert main(["analyze", "--lr_scales", "0.1", "--tag", "lrgrid_test"] + common) == 0
+    rep = Paths(out, results="results_lrgrid_test").results
+    assert (rep / "report_auto.md").exists() and (rep / "compare_retrain.csv").exists()
+    assert not (Paths(out).results / "report_auto.md").exists()          # báo cáo chính không bị ghi đè
+
+
+
 
 # ---------------------------------------------------------------- giai đoạn 1: dừng sớm theo loss train
 def test_early_stop_patience_and_best():
