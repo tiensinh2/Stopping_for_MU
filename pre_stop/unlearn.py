@@ -8,7 +8,7 @@ Nguồn code gốc (đã clone vào _orig/ khi viết file này):
           SGD lr 0.013, momentum 0.9, wd 5e-4, batch 256, 10 epoch; mỗi epoch: F với nhãn ngẫu nhiên rồi R,
           grad nhân mask, tham số ngoài mask trả về giá trị đầu epoch.
   scrub   meghdadk/SCRUB small_scale_unlearning.ipynb + thirdparty/repdistiller/helper/loops.py:
-          Adam lr 5e-4, wd 0.1, 10 epoch, msteps 3, lr nhân 0.1 sau epoch 5, 8, 9, alpha 0.5, gamma 1, KD T=2,
+          SGD mom 0.9 lr 1e-3, wd 5e-4 [đổi theo yêu cầu; notebook gốc: Adam lr 5e-4 wd 0.1], 10 epoch, msteps 3, lr nhân 0.1 sau epoch 5, 8, 9, alpha 0.5, gamma 1, KD T=2,
           batch R 32 / F 64. Epoch e<=3: maximize (-KL) trên F rồi minimize (gamma*CE + alpha*KL) trên R.
   tarun   vikram2000b/Fast-Machine-Unlearning (UNSIR) notebook: học noise cho từng lớp cần quên (Adam 0.1, 5x8 bước),
           epoch 1 = impair (noise + 1000 mẫu R/lớp, Adam 0.02), epoch 2 = repair (1000 mẫu R/lớp, Adam 0.01), batch 256.
@@ -37,7 +37,6 @@ from .measure import measure, test_metrics
 assert "eval_oracle" not in globals(), "unlearn.py không được import eval_oracle (§0.4.1)"
 
 BN_MODE = {"ga": "train", "ft": "train", "salun": "train", "scrub": "train (student), eval (teacher)",
-           "scrub_sgd": "train (student), eval (teacher)",
            "tarun": "train (noise: eval)"}
 
 
@@ -235,12 +234,15 @@ class SalUn(Base):
 class Scrub(Base):
     """SCRUB gốc (meghdadk): teacher = θ0 đóng băng, student = bản sao; không có SWA/param_dist ở bản gốc này."""
     name = "scrub"
-    LR, WD, T = 5e-4, 0.1, 2.0
+    # [THAY ĐỔI THEO YÊU CẦU, khác cấu hình mặc định của notebook gốc]: SGD momentum 0.9 (nhánh args.optim == "sgd" có sẵn trong
+    # notebook), lr 1e-3, wd 5e-4 (giá trị trong chú thích `0.1#5e-4` của notebook) thay cho Adam lr 5e-4 wd 0.1, vì Adam làm
+    # L_R vọt 0.007 -> 1.30 ngay epoch 1 và không phục hồi. Lịch lr x0.1 sau epoch 5, 8, 9 giữ nguyên.
+    OPT_NAME = "sgd"
+    LR, WD, T = 1e-3, 5e-4, 2.0
     ALPHA, GAMMA = 0.5, 1.0            # beta = 0 trong notebook gốc nên không có số hạng kd
     MSTEPS = 3
     DECAY_EPOCHS, DECAY_RATE = (5, 8, 9), 0.1
     BS_R, BS_F = 32, 64
-    OPT = "adam"                       # "sgd": nhánh args.optim == "sgd" của notebook gốc (xem ScrubSGD)
 
     def __init__(self, *a, lr_scale: float = 1.0):
         super().__init__(*a)
@@ -251,10 +253,7 @@ class Scrub(Base):
         # lưới lr (EXPLORATORY): lr GIỮ KHÔNG ĐỔI = lr_scale * lr gốc, không giảm ×0,1 ở epoch 5, 8, 9 (lịch gốc làm lr về
         # ~1e-3 lần chỉ sau 9 epoch nên quỹ đạo kẹt dao động). lr_scale = 1: giữ nguyên lịch gốc.
         self.decay = lr_scale == 1.0
-        if self.OPT == "sgd":
-            self.opt = torch.optim.SGD(self.model.parameters(), lr=self.lr0, momentum=0.9, weight_decay=self.WD)
-        else:
-            self.opt = torch.optim.Adam(self.model.parameters(), lr=self.lr0, weight_decay=self.WD)
+        self.opt = torch.optim.SGD(self.model.parameters(), lr=self.lr0, momentum=0.9, weight_decay=self.WD)
         self.ep = 0
 
     def _kl(self, s, t):
@@ -345,17 +344,7 @@ class Tarun(Base):
         return self._run(xr, yr, 0.01)                            # repair: chỉ retain, Adam 0.01
 
 
-class ScrubSGD(Scrub):
-    """[EXPLORATORY] SCRUB với nhánh SGD của notebook gốc (`args.optim == "sgd"`: SGD, momentum 0.9) thay cho Adam, vì Adam
-    lr 5e-4 làm hỏng utility ngay epoch 1. Mọi thứ khác như SCRUB (msteps 3, alpha 0.5, KD T=2, batch 32/64, lr ×0.1 sau epoch
-    5, 8, 9). lr 1e-3 theo yêu cầu người dùng; wd 5e-4 là giá trị trong chú thích `0.1#5e-4` của notebook gốc. Cả hai KHÔNG
-    phải cấu hình mặc định của code gốc (notebook gốc đặt optim = 'adam', wd 0.1)."""
-    name = "scrub_sgd"
-    OPT = "sgd"
-    LR, WD = 1e-3, 5e-4
-
-
-METHOD_CLS = {"ga": GA, "ft": FT, "salun": SalUn, "scrub": Scrub, "tarun": Tarun, "scrub_sgd": ScrubSGD}
+METHOD_CLS = {"ga": GA, "ft": FT, "salun": SalUn, "scrub": Scrub, "tarun": Tarun}
 TARUN_FTYPES = ("class-0",)       # UNSIR gốc chỉ quên theo lớp: không áp dụng được cho F ngẫu nhiên / hard
 
 
@@ -380,10 +369,10 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
     jl, arr_p, meta_p, test_p = paths.traj_jsonl(rid), paths.traj_arrays(rid), paths.meta(rid), paths.traj_test(rid)
     if meta_p.exists() and arr_p.exists() and not force:
         old = json.loads(meta_p.read_text(encoding="utf-8"))
-        if "stop_reason" in old:
+        if "stop_reason" in old and old.get("optimizer", "") == getattr(METHOD_CLS[split_method(method)[0]], "OPT_NAME", ""):
             log(f"[traj] {rid} đã xong, bỏ qua")
             return old
-        log(f"[traj] {rid} là quỹ đạo kiểu cũ (cắt cứng số epoch, không có stop_reason): chạy lại")
+        log(f"[traj] {rid} là quỹ đạo kiểu cũ (không có stop_reason hoặc optimizer khác hiện tại, vd. scrub Adam): chạy lại")
     sets = load_sets(paths, data, cfg, seed, ftype)
     seed_all(seed + 1000 * u)
     model = _load_theta0(cfg, paths, seed, ftype, device)
@@ -473,6 +462,6 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
     meta = {"run_id": rid, "method": method, "base_method": base, "lr_scale": scale, "ftype": ftype, "seed": seed, "u": u, "n_epochs": ep if stop_reason != "diverged" else ep - 1,
             "max_epochs": n_ep, "stop_reason": stop_reason, "n_rules_undecided": len(pending),
             "n_snapshots": len(arrays["epochs"]), "n_updates": um.n_updates, "diverged": diverged,
-            "wall_s": time.time() - t0, "arrays": arr_p.name, "bn_mode": BN_MODE[base]}
+            "wall_s": time.time() - t0, "arrays": arr_p.name, "bn_mode": BN_MODE[base], "optimizer": getattr(METHOD_CLS[base], "OPT_NAME", "")}
     meta_p.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta

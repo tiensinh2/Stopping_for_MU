@@ -262,7 +262,7 @@ def test_scrub_maximize_only_first_msteps_epochs():
         lrs.append(um.opt.param_groups[0]["lr"])
     nr, nf = math.ceil(len(sets.r) / 32), math.ceil(len(sets.f) / 64)
     assert per == [nr + nf] * 3 + [nr] * 3                   # msteps = 3
-    assert lrs[4] == pytest.approx(5e-4) and lrs[5] == pytest.approx(5e-5)   # gốc: epoch > 5 mới nhân 0.1
+    assert lrs[4] == pytest.approx(1e-3) and lrs[5] == pytest.approx(1e-4)   # gốc: epoch > 5 mới nhân 0.1
 
 
 def test_salun_mask_is_top_half():
@@ -297,11 +297,11 @@ def test_lr_grid_scales_lr_and_keeps_original_schedule():
     for _ in range(6):
         sc.epoch()
         lrs.append(sc.opt.param_groups[0]["lr"])
-    assert all(l == pytest.approx(5e-5) for l in lrs)         # scrub@s (s != 1): lr KHÔNG ĐỔI, không giảm ×0.1 ở epoch 5, 8, 9
+    assert all(l == pytest.approx(1e-4) for l in lrs)         # scrub@s (s != 1): lr KHÔNG ĐỔI, không giảm ×0.1 ở epoch 5, 8, 9
     s1 = U.Scrub(cfg, data, sets, _fresh_model(cfg), dev)
     for _ in range(6):
         s1.epoch()
-    assert s1.opt.param_groups[0]["lr"] == pytest.approx(5e-5)    # scrub gốc (s = 1) vẫn giữ lịch ×0.1 sau epoch 5
+    assert s1.opt.param_groups[0]["lr"] == pytest.approx(1e-4)    # scrub gốc (s = 1) vẫn giữ lịch ×0.1 sau epoch 5
 
 
 def test_lr_grid_method_names():
@@ -313,18 +313,17 @@ def test_lr_grid_method_names():
     assert applicable("scrub@0.1", "class-0") and n_epochs_for(get_cfg("kaggle"), "ga@0.1") is None
 
 
-def test_scrub_sgd_uses_sgd_with_original_schedule():
+def test_scrub_uses_sgd_with_original_schedule():
     from pre_stop import unlearn as U
     cfg, data, sets = _epoch_env(None)
-    dev = torch.device("cpu")
-    um = U.METHOD_CLS["scrub_sgd"](cfg, data, sets, _fresh_model(cfg), dev)
+    um = U.METHOD_CLS["scrub"](cfg, data, sets, _fresh_model(cfg), torch.device("cpu"))
     g = um.opt.param_groups[0]
     assert isinstance(um.opt, torch.optim.SGD) and g["lr"] == pytest.approx(1e-3) and g["momentum"] == 0.9
+    assert g["weight_decay"] == pytest.approx(5e-4)
     for _ in range(6):
         um.epoch()
     assert um.opt.param_groups[0]["lr"] == pytest.approx(1e-4)          # lr x0.1 sau epoch 5, như SCRUB gốc
-    assert isinstance(U.Scrub(cfg, data, sets, _fresh_model(cfg), dev).opt, torch.optim.Adam)   # scrub gốc vẫn là Adam
-    assert U.applicable("scrub_sgd", "class-0") and U.split_method("scrub_sgd") == ("scrub_sgd", 1.0)
+    assert "scrub_sgd" not in U.METHOD_CLS
 
 
 def test_plateau_is_opt_in_and_not_an_epoch_cap():
