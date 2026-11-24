@@ -8,7 +8,7 @@ Nguồn code gốc (đã clone vào _orig/ khi viết file này):
           SGD lr 0.013, momentum 0.9, wd 5e-4, batch 256, 10 epoch; mỗi epoch: F với nhãn ngẫu nhiên rồi R,
           grad nhân mask, tham số ngoài mask trả về giá trị đầu epoch.
   scrub   meghdadk/SCRUB small_scale_unlearning.ipynb + thirdparty/repdistiller/helper/loops.py:
-          SGD mom 0.9 lr 1e-3, wd 5e-4 [đổi theo yêu cầu; notebook gốc: Adam lr 5e-4 wd 0.1], 10 epoch, msteps 3, lr nhân 0.1 sau epoch 5, 8, 9, alpha 0.5, gamma 1, KD T=2,
+          SGD mom 0.9 lr 1e-2, wd 5e-4 [đổi theo yêu cầu; notebook gốc: Adam lr 5e-4 wd 0.1], 10 epoch, msteps 3, lr nhân 0.1 sau epoch 5, 8, 9, alpha 0.5, gamma 1, KD T=2,
           batch R 32 / F 64. Epoch e<=3: maximize (-KL) trên F rồi minimize (gamma*CE + alpha*KL) trên R.
   tarun   vikram2000b/Fast-Machine-Unlearning (UNSIR) notebook: học noise cho từng lớp cần quên (Adam 0.1, 5x8 bước),
           epoch 1 = impair (noise + 1000 mẫu R/lớp, Adam 0.02), epoch 2 = repair (1000 mẫu R/lớp, Adam 0.01), batch 256.
@@ -235,10 +235,11 @@ class Scrub(Base):
     """SCRUB gốc (meghdadk): teacher = θ0 đóng băng, student = bản sao; không có SWA/param_dist ở bản gốc này."""
     name = "scrub"
     # [THAY ĐỔI THEO YÊU CẦU, khác cấu hình mặc định của notebook gốc]: SGD momentum 0.9 (nhánh args.optim == "sgd" có sẵn trong
-    # notebook), lr 1e-3, wd 5e-4 (giá trị trong chú thích `0.1#5e-4` của notebook) thay cho Adam lr 5e-4 wd 0.1, vì Adam làm
-    # L_R vọt 0.007 -> 1.30 ngay epoch 1 và không phục hồi. Lịch lr x0.1 sau epoch 5, 8, 9 giữ nguyên.
-    OPT_NAME = "sgd"
-    LR, WD, T = 1e-3, 5e-4, 2.0
+    # notebook), lr 1e-2 (như ga/ft; lr 1e-3 quá nhỏ: L_F gần như không giảm), wd 5e-4 (giá trị trong chú thích `0.1#5e-4` của
+    # notebook) thay cho Adam lr 5e-4 wd 0.1, vì Adam làm L_R vọt 0.007 -> 1.30 ngay epoch 1 và không phục hồi. Lịch lr x0.1
+    # sau epoch 5, 8, 9 giữ nguyên. OPT_NAME ghi cả lr để quỹ đạo chạy với lr khác bị chạy lại.
+    OPT_NAME = "sgd-lr1e-2"
+    LR, WD, T = 1e-2, 5e-4, 2.0
     ALPHA, GAMMA = 0.5, 1.0            # beta = 0 trong notebook gốc nên không có số hạng kd
     MSTEPS = 3
     DECAY_EPOCHS, DECAY_RATE = (5, 8, 9), 0.1

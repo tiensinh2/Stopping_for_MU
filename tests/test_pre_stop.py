@@ -262,7 +262,7 @@ def test_scrub_maximize_only_first_msteps_epochs():
         lrs.append(um.opt.param_groups[0]["lr"])
     nr, nf = math.ceil(len(sets.r) / 32), math.ceil(len(sets.f) / 64)
     assert per == [nr + nf] * 3 + [nr] * 3                   # msteps = 3
-    assert lrs[4] == pytest.approx(1e-3) and lrs[5] == pytest.approx(1e-4)   # gốc: epoch > 5 mới nhân 0.1
+    assert lrs[4] == pytest.approx(1e-2) and lrs[5] == pytest.approx(1e-3)   # gốc: epoch > 5 mới nhân 0.1
 
 
 def test_salun_mask_is_top_half():
@@ -297,11 +297,11 @@ def test_lr_grid_scales_lr_and_keeps_original_schedule():
     for _ in range(6):
         sc.epoch()
         lrs.append(sc.opt.param_groups[0]["lr"])
-    assert all(l == pytest.approx(1e-4) for l in lrs)         # scrub@s (s != 1): lr KHÔNG ĐỔI, không giảm ×0.1 ở epoch 5, 8, 9
+    assert all(l == pytest.approx(1e-3) for l in lrs)         # scrub@s (s != 1): lr KHÔNG ĐỔI, không giảm ×0.1 ở epoch 5, 8, 9
     s1 = U.Scrub(cfg, data, sets, _fresh_model(cfg), dev)
     for _ in range(6):
         s1.epoch()
-    assert s1.opt.param_groups[0]["lr"] == pytest.approx(1e-4)    # scrub gốc (s = 1) vẫn giữ lịch ×0.1 sau epoch 5
+    assert s1.opt.param_groups[0]["lr"] == pytest.approx(1e-3)    # scrub gốc (s = 1) vẫn giữ lịch ×0.1 sau epoch 5
 
 
 def test_lr_grid_method_names():
@@ -318,11 +318,11 @@ def test_scrub_uses_sgd_with_original_schedule():
     cfg, data, sets = _epoch_env(None)
     um = U.METHOD_CLS["scrub"](cfg, data, sets, _fresh_model(cfg), torch.device("cpu"))
     g = um.opt.param_groups[0]
-    assert isinstance(um.opt, torch.optim.SGD) and g["lr"] == pytest.approx(1e-3) and g["momentum"] == 0.9
+    assert isinstance(um.opt, torch.optim.SGD) and g["lr"] == pytest.approx(1e-2) and g["momentum"] == 0.9
     assert g["weight_decay"] == pytest.approx(5e-4)
     for _ in range(6):
         um.epoch()
-    assert um.opt.param_groups[0]["lr"] == pytest.approx(1e-4)          # lr x0.1 sau epoch 5, như SCRUB gốc
+    assert um.opt.param_groups[0]["lr"] == pytest.approx(1e-3)          # lr x0.1 sau epoch 5, như SCRUB gốc
     assert "scrub_sgd" not in U.METHOD_CLS
 
 
