@@ -37,6 +37,7 @@ from .measure import measure, test_metrics
 assert "eval_oracle" not in globals(), "unlearn.py không được import eval_oracle (§0.4.1)"
 
 BN_MODE = {"ga": "train", "ft": "train", "salun": "train", "scrub": "train (student), eval (teacher)",
+           "scrub_sgd": "train (student), eval (teacher)",
            "tarun": "train (noise: eval)"}
 
 
@@ -239,6 +240,7 @@ class Scrub(Base):
     MSTEPS = 3
     DECAY_EPOCHS, DECAY_RATE = (5, 8, 9), 0.1
     BS_R, BS_F = 32, 64
+    OPT = "adam"                       # "sgd": nhánh args.optim == "sgd" của notebook gốc (xem ScrubSGD)
 
     def __init__(self, *a, lr_scale: float = 1.0):
         super().__init__(*a)
@@ -249,7 +251,10 @@ class Scrub(Base):
         # lưới lr (EXPLORATORY): lr GIỮ KHÔNG ĐỔI = lr_scale * lr gốc, không giảm ×0,1 ở epoch 5, 8, 9 (lịch gốc làm lr về
         # ~1e-3 lần chỉ sau 9 epoch nên quỹ đạo kẹt dao động). lr_scale = 1: giữ nguyên lịch gốc.
         self.decay = lr_scale == 1.0
-        self.opt = torch.optim.Adam(self.model.parameters(), lr=self.lr0, weight_decay=self.WD)
+        if self.OPT == "sgd":
+            self.opt = torch.optim.SGD(self.model.parameters(), lr=self.lr0, momentum=0.9, weight_decay=self.WD)
+        else:
+            self.opt = torch.optim.Adam(self.model.parameters(), lr=self.lr0, weight_decay=self.WD)
         self.ep = 0
 
     def _kl(self, s, t):
@@ -340,7 +345,17 @@ class Tarun(Base):
         return self._run(xr, yr, 0.01)                            # repair: chỉ retain, Adam 0.01
 
 
-METHOD_CLS = {"ga": GA, "ft": FT, "salun": SalUn, "scrub": Scrub, "tarun": Tarun}
+class ScrubSGD(Scrub):
+    """[EXPLORATORY] SCRUB với nhánh SGD của notebook gốc (`args.optim == "sgd"`: SGD, momentum 0.9) thay cho Adam, vì Adam
+    lr 5e-4 làm hỏng utility ngay epoch 1. Mọi thứ khác như SCRUB (msteps 3, alpha 0.5, KD T=2, batch 32/64, lr ×0.1 sau epoch
+    5, 8, 9). lr 1e-3 theo yêu cầu người dùng; wd 5e-4 là giá trị trong chú thích `0.1#5e-4` của notebook gốc. Cả hai KHÔNG
+    phải cấu hình mặc định của code gốc (notebook gốc đặt optim = 'adam', wd 0.1)."""
+    name = "scrub_sgd"
+    OPT = "sgd"
+    LR, WD = 1e-3, 5e-4
+
+
+METHOD_CLS = {"ga": GA, "ft": FT, "salun": SalUn, "scrub": Scrub, "tarun": Tarun, "scrub_sgd": ScrubSGD}
 TARUN_FTYPES = ("class-0",)       # UNSIR gốc chỉ quên theo lớp: không áp dụng được cho F ngẫu nhiên / hard
 
 

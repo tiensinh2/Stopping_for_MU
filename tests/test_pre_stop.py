@@ -313,6 +313,20 @@ def test_lr_grid_method_names():
     assert applicable("scrub@0.1", "class-0") and n_epochs_for(get_cfg("kaggle"), "ga@0.1") is None
 
 
+def test_scrub_sgd_uses_sgd_with_original_schedule():
+    from pre_stop import unlearn as U
+    cfg, data, sets = _epoch_env(None)
+    dev = torch.device("cpu")
+    um = U.METHOD_CLS["scrub_sgd"](cfg, data, sets, _fresh_model(cfg), dev)
+    g = um.opt.param_groups[0]
+    assert isinstance(um.opt, torch.optim.SGD) and g["lr"] == pytest.approx(1e-3) and g["momentum"] == 0.9
+    for _ in range(6):
+        um.epoch()
+    assert um.opt.param_groups[0]["lr"] == pytest.approx(1e-4)          # lr x0.1 sau epoch 5, như SCRUB gốc
+    assert isinstance(U.Scrub(cfg, data, sets, _fresh_model(cfg), dev).opt, torch.optim.Adam)   # scrub gốc vẫn là Adam
+    assert U.applicable("scrub_sgd", "class-0") and U.split_method("scrub_sgd") == ("scrub_sgd", 1.0)
+
+
 def test_plateau_is_opt_in_and_not_an_epoch_cap():
     from pre_stop.unlearn import plateau
     flat = [{"L_F": 0.5, "L_R": 0.3, "L_V": 0.6}] * 10
