@@ -35,7 +35,7 @@ def _args(argv=None):
                    help="[EXPLORATORY] lưới lr: với mỗi hệ số s, chạy thêm ga@s và scrub@s (lr = s * lr của code gốc) "
                         "thay cho --methods; báo cáo ghi vào results_<tag>/ (nên đặt --tag)")
     p.add_argument("--plateau_w", type=int, default=None,
-                   help="tuỳ chọn: dừng quỹ đạo khi L_F, L_R, L_V đứng yên W epoch liền (mặc định TẮT, không có trần)")
+                   help="tuỳ chọn: dừng khi tới vùng ổn định: trung bình nửa sau so với nửa trước của W epoch gần nhất đổi < plateau_tol ở L_F, L_R, L_V (mặc định TẮT, không có trần)")
     p.add_argument("--plateau_tol", type=float, default=None)
     p.add_argument("--force", action="store_true")
     return p.parse_args(argv)

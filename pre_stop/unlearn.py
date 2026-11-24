@@ -66,15 +66,18 @@ def n_epochs_for(cfg: Cfg, method: str) -> int | None:
 
 
 def plateau(rows: list[dict], w: int, tol: float) -> bool:
-    """Quỹ đạo "đứng yên": trong w epoch gần nhất, L_F, L_R, L_V đều có (max-min) <= tol * max(|trung bình|, 0.1).
-    KHÔNG phải trần epoch: chỉ dừng khi quỹ đạo không còn thay đổi (các luật không thể quyết định khác đi nữa).
-    Tiêu chí này do người triển khai đề xuất; không dùng oracle / test."""
-    if w is None or len(rows) < w + 1:
+    """Quỹ đạo đã tới "vùng ổn định": chia w epoch gần nhất làm hai nửa; trung bình nửa sau so với nửa trước của L_F, L_R,
+    L_V đều đổi <= tol * max(|trung bình|, 0.1). Dùng trung bình nửa cửa sổ nên không bị nhiễu epoch-to-epoch (vài %)
+    làm hỏng (tiêu chí max-min cũ không bao giờ thoả khi L_F dao động ±3%). KHÔNG phải trần epoch; không dùng oracle/test.
+    Do người triển khai đề xuất: dừng khi đã tới vùng loss ổn định, không tối ưu thêm."""
+    if w is None or len(rows) < w:
         return False
-    last = rows[-(w + 1):]
+    last = rows[-w:]
+    h = w // 2
     for k in ("L_F", "L_R", "L_V"):
         v = np.array([r[k] for r in last], dtype=np.float64)
-        if v.max() - v.min() > tol * max(abs(v.mean()), 0.1):
+        a, b = v[:h].mean(), v[h:].mean()
+        if abs(b - a) > tol * max(abs((a + b) / 2), 0.1):
             return False
     return True
 
@@ -243,6 +246,9 @@ class Scrub(Base):
         for p in self.teacher.parameters():
             p.requires_grad_(False)
         self.lr0 = self.LR * lr_scale                             # lr_scale != 1: lưới lr EXPLORATORY
+        # lưới lr (EXPLORATORY): lr GIỮ KHÔNG ĐỔI = lr_scale * lr gốc, không giảm ×0,1 ở epoch 5, 8, 9 (lịch gốc làm lr về
+        # ~1e-3 lần chỉ sau 9 epoch nên quỹ đạo kẹt dao động). lr_scale = 1: giữ nguyên lịch gốc.
+        self.decay = lr_scale == 1.0
         self.opt = torch.optim.Adam(self.model.parameters(), lr=self.lr0, weight_decay=self.WD)
         self.ep = 0
 
@@ -263,7 +269,7 @@ class Scrub(Base):
 
     def epoch(self) -> float:
         self.ep += 1
-        k = sum(self.ep > e for e in self.DECAY_EPOCHS)           # sgda_adjust_learning_rate
+        k = sum(self.ep > e for e in self.DECAY_EPOCHS) if self.decay else 0     # sgda_adjust_learning_rate
         if k > 0:
             for g in self.opt.param_groups:
                 g["lr"] = self.lr0 * (self.DECAY_RATE ** k)
@@ -440,7 +446,7 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
                 break
             if cfg.plateau_w and plateau(rows, cfg.plateau_w, cfg.plateau_tol):
                 stop_reason = "plateau"
-                log(f"[traj] {rid} quỹ đạo đứng yên {cfg.plateau_w} epoch (tol {cfg.plateau_tol}) ở epoch {ep}: dừng "
+                log(f"[traj] {rid} quỹ đạo đã tới vùng ổn định (cửa sổ {cfg.plateau_w} epoch, tol {cfg.plateau_tol}) ở epoch {ep}: dừng "
                     f"({len(pending)}/{len(stop_rules)} luật chưa quyết định)")
                 break
     if stop_reason == "max_epochs":      # chỉ xảy ra khi người dùng tự đặt --max_epochs

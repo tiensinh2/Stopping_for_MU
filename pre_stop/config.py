@@ -57,10 +57,10 @@ class Cfg:
     # unlearning: đơn vị là EPOCH, theo định nghĩa của code gốc từng phương pháp (xem unlearn.py)
     n_epochs: int | None = None      # số epoch CỐ ĐỊNH (chỉ để kiểm thử / ép tay). None = chạy đến khi luật dừng quyết định
     max_epochs: int | None = None    # None = KHÔNG có trần (mặc định, theo yêu cầu). Chỉ đặt khi người dùng tự muốn
-    # Tuỳ chọn (mặc định TẮT): dừng khi quỹ đạo "đứng yên" W epoch liền (L_F, L_R, L_V đổi < tol tương đối). Không phải trần
+    # Tuỳ chọn (mặc định TẮT): dừng khi tới vùng ổn định: trung bình nửa sau so với nửa trước của W epoch gần nhất đổi < tol tương đối ở L_F, L_R, L_V. Không phải trần
     # epoch, nhưng là tiêu chí do người triển khai đề xuất: chỉ bật khi người dùng đồng ý (dùng cho lưới lr exploratory).
     plateau_w: int | None = None
-    plateau_tol: float = 0.01
+    plateau_tol: float = 0.05
     fixed_k: tuple = (1, 2, 3, 5, 10)   # R2-fixed: dừng ở epoch K (K vượt quỹ đạo -> lấy epoch cuối, cờ clipped)
 
     def as_profile(self) -> _BaseProfile:

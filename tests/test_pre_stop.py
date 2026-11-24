@@ -297,7 +297,11 @@ def test_lr_grid_scales_lr_and_keeps_original_schedule():
     for _ in range(6):
         sc.epoch()
         lrs.append(sc.opt.param_groups[0]["lr"])
-    assert lrs[0] == pytest.approx(5e-5) and lrs[4] == pytest.approx(5e-5) and lrs[5] == pytest.approx(5e-6)  # lịch ×0.1 sau epoch 5, 8, 9 giữ nguyên
+    assert all(l == pytest.approx(5e-5) for l in lrs)         # scrub@s (s != 1): lr KHÔNG ĐỔI, không giảm ×0.1 ở epoch 5, 8, 9
+    s1 = U.Scrub(cfg, data, sets, _fresh_model(cfg), dev)
+    for _ in range(6):
+        s1.epoch()
+    assert s1.opt.param_groups[0]["lr"] == pytest.approx(5e-5)    # scrub gốc (s = 1) vẫn giữ lịch ×0.1 sau epoch 5
 
 
 def test_lr_grid_method_names():
@@ -311,10 +315,12 @@ def test_lr_grid_method_names():
 
 def test_plateau_is_opt_in_and_not_an_epoch_cap():
     from pre_stop.unlearn import plateau
-    flat = [{"L_F": 0.5, "L_R": 0.3, "L_V": 0.6}] * 11
-    assert plateau(flat, 10, 0.01) and not plateau(flat[:10], 10, 0.01)
-    moving = flat[:-1] + [{"L_F": 0.9, "L_R": 0.3, "L_V": 0.6}]
-    assert not plateau(moving, 10, 0.01)
+    flat = [{"L_F": 0.5, "L_R": 0.3, "L_V": 0.6}] * 10
+    assert plateau(flat, 10, 0.05) and not plateau(flat[:9], 10, 0.05)
+    noisy = [{"L_F": 0.60 + (0.02 if i % 2 else -0.02), "L_R": 0.17, "L_V": 0.59} for i in range(10)]
+    assert plateau(noisy, 10, 0.05)                            # nhiễu ±3% giữa các epoch KHÔNG cản việc dừng
+    drifting = [{"L_F": 0.9 - 0.05 * i, "L_R": 0.3, "L_V": 0.6} for i in range(10)]
+    assert not plateau(drifting, 10, 0.05)                     # L_F còn đi xuống thì chưa dừng
     assert get_cfg("kaggle").plateau_w is None            # mặc định TẮT
 
 
