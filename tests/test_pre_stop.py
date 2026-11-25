@@ -353,6 +353,22 @@ def test_lr_grid_trajectory_runs_and_reports_separately(tmp_path):
     assert (rep / "report_auto.md").exists() and (rep / "compare_retrain.csv").exists()
     assert not (Paths(out).results / "report_auto.md").exists()          # báo cáo chính không bị ghi đè
 
+def test_plateau_stops_a_trajectory_that_never_decides(tmp_path):
+    """Quỹ đạo mà luật PRE không bao giờ quyết định (F không quên) phải dừng nhờ --plateau_w, không chạy mãi."""
+    from pre_stop.run import main
+    out = str(tmp_path)
+    common = ["--profile", "fake", "--out", out, "--seeds", "0", "--ftypes", "random-450"]
+    assert main(["pre"] + common) == 0 and main(["cfg"] + common) == 0
+    assert main(["traj", "--methods", "scrub", "--plateau_w", "4", "--plateau_tol", "5.0", "--force"] + common) == 0
+    paths = Paths(out)
+    meta = json.loads(paths.meta(paths.run_id("scrub", "random-450", 0, 0)).read_text(encoding="utf-8"))
+    assert meta["stop_reason"] in ("plateau", "all_rules_decided", "diverged")
+    assert meta["optimizer"] == "sgd-lr1e-2"
+    if meta["stop_reason"] == "plateau":
+        assert meta["n_epochs"] >= 3 and meta["n_rules_undecided"] > 0     # cửa sổ 4 snapshot, gồm cả epoch 0 (θ0)
+
+
+
 
 
 
