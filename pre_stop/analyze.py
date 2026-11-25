@@ -98,6 +98,12 @@ def analyze_run(cfg: Cfg, paths, seed, ftype, method, u=0) -> list[dict]:
                "auc_gap": abs(auc_k[k] - auc_or), "L_F": traj[k]["L_F"], "A_F": traj[k]["A_F"],
                "L_R": traj[k]["L_R"], "A_R": traj[k]["A_R"], "L_V": traj[k]["L_V"], "A_V": traj[k]["A_V"],
                "A_T": A_T[k], "L_T": L_T[k]}
+        # GapAvg (kịch bản §19.2), đơn vị điểm phần trăm: trung bình |lệch so với retrain| của FA, RA, TA và AUC(MIA);
+        # GapAvg-TA-MIA chỉ lấy TA và MIA. Luật PRE không dùng chúng để chọn k.
+        d_fa, d_ra = abs(row["A_F"] - orc_m["A_F"]), abs(row["A_R"] - orc_m["A_R"])
+        d_ta, d_mia = abs(row["A_T"] - orc_m["A_T"]), row["auc_gap"]
+        row["gapavg"] = 100.0 * float(np.mean([d_fa, d_ra, d_ta, d_mia]))
+        row["gapavg_ta_mia"] = 100.0 * float(np.mean([d_ta, d_mia]))
         code = FWD.get(rule, "")
         row["fwd_images_per_snapshot"] = ("F" in code) * nF + ("R" in code) * nR + ("V" in code) * nV
         if extra:
@@ -116,7 +122,8 @@ def analyze_run(cfg: Cfg, paths, seed, ftype, method, u=0) -> list[dict]:
                                   "regret": orc.d_hat(P["loss_F_pre"]) - d_hat[k_star], "delta0": d_hat[0] - orc.d_hat(P["loss_F_pre"]),
                                   "epoch": -1, "k": -1, "pick_k0": 0,
                                   "L_F": P["L_F_pre"], "A_F": P["A_F_pre"], "L_V": P["L_V_pre"], "A_V": nan,
-                                  "L_R": nan, "A_R": nan, "A_T": pre["A_T_pre"], "L_T": pre["L_T_pre"]})
+                                  "L_R": nan, "A_R": nan, "A_T": pre["A_T_pre"], "L_T": pre["L_T_pre"],
+                                  "gapavg": nan, "gapavg_ta_mia": nan})   # thiếu RA và MIA của θ_pre
     for K in cfg.fixed_k:
         add(f"R2-fixed-{K}", "-", R.r2_fixed(traj, K))
     ctx0 = R.Ctx(R.make_target(P, "none", L_V0), L_R0, L_V0)
@@ -180,6 +187,7 @@ def summarize(df: pd.DataFrame) -> pd.DataFrame:
     out = g.agg(n=("regret", "size"), regret_med=("regret", "median"), regret_iqr=("regret", _iqr),
                 epoch_med=("epoch", "median"), pct_k0=("pick_k0", "mean"), delta0_med=("delta0", "median"),
                 gT_med=("g_T", "median"), gKL_med=("G_KL", "median"), auc_gap_med=("auc_gap", "median"),
+                gapavg_med=("gapavg", "median"), gapavg_ta_mia_med=("gapavg_ta_mia", "median"),
                 A_F_med=("A_F", "median"), no_adm=("no_admissible", "mean"),
                 fwd=("fwd_images_per_snapshot", "max")).reset_index()
     out["pct_k0"] *= 100
@@ -207,6 +215,9 @@ def compare_retrain(df: pd.DataFrame, rules=None) -> pd.DataFrame:
                 r[m] = float(h[m].median())
                 r[m + "_iqr"] = _iqr(h[m].dropna())
                 r["gap_" + m] = float(h["gap_" + m].median())
+            for m in ("g_T", "G_KL", "auc_gap", "gapavg", "gapavg_ta_mia"):
+                r[m] = float(h[m].median())
+                r[m + "_iqr"] = _iqr(h[m].dropna())
             rows.append(r)
     return pd.DataFrame(rows)
 
@@ -334,10 +345,13 @@ def write_report(paths, cfg, gate, summ, crit, rej, st, df):
     L += ["## 2b. So sánh với mô hình retrain (oracle θ_R2, trung bình M=3), median qua seed\n",
           "Mỗi nhóm có một dòng RETRAIN (mốc so sánh) và các luật dừng. L = loss, A = accuracy; "
           "F = forget set, R = retain (R_sub 5000 mẫu), V = validation, T = test. "
+          "Cột phụ: g_T = |A_T − A_T(retrain)| (điểm %), G_KL = KL(softmax oracle ‖ mô hình) trên F, "
+          "auc_gap = |AUC MIA(F vs V, max-softmax) − AUC của oracle|, gapavg = trung bình |lệch| của FA, RA, TA, AUC (điểm %); "
+          "dòng R1-rollback không có gapavg (thiếu RA, MIA). MIA tổng thể là chỉ báo yếu, đọc kèm g_T và G_KL. "
           "Bản đầy đủ kèm IQR và chênh lệch có dấu `gap_*` nằm ở `results/compare_retrain.csv`. "
           "R1-rollback chính là θ_pre nên không có L_R, A_R, A_V (không đo).\n"]
     cmp_ = compare_retrain(df)
-    show = ["rule", "target", "n"] + list(CMP)
+    show = ["rule", "target", "n"] + list(CMP) + ["g_T", "G_KL", "auc_gap", "gapavg"]
     for (ft, me), g in cmp_.groupby(["ftype", "method"], sort=False):
         L += [f"### {ft} · {me}\n", _md(g[show]), ""]
     L += ["## 3. Tiêu chí thành công §12.1 (báo đủ các biến thể, không chọn biến thể tốt nhất sau khi xem)\n",

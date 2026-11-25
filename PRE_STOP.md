@@ -72,7 +72,7 @@ snapshot lấy ở cuối mỗi epoch (và epoch 0 = θ0). Số bước tối ư
 
 ## Điều tôi chưa kiểm chứng
 - Giai đoạn 1 chạy tối đa 300 epoch với cosine lr theo 300 epoch. Dừng sớm (patience 5, theo loss train trên R1) **chỉ được tính từ epoch mà lr đã xuống dưới 10% lr gốc** (khoảng epoch 240, hàm `early_stop_start`); sau đó nạp lại trọng số của epoch tốt nhất. Lý do: lần chạy đầu dừng ở epoch 43 khi lr còn 0,096, θ_pre chỉ đạt test acc 71,6% và bị cổng 90% chặn. Số epoch thực chạy, epoch tốt nhất và lr lúc dừng ghi trong `stage1_run` của `pre_stats`. Cache θ_pre sinh bằng cách huấn luyện khác bị từ chối (`stage1_signature`).
-- Báo cáo có mục 2b và `results/compare_retrain.csv`: L/A trên F, R, V, test của từng luật dừng đặt cạnh dòng RETRAIN (trung bình M=3 oracle), kèm IQR và chênh lệch có dấu.
+- Báo cáo có mục 2b và `results/compare_retrain.csv`: L/A trên F, R, V, test của từng luật dừng đặt cạnh dòng RETRAIN (trung bình M=3 oracle), kèm IQR và chênh lệch có dấu. Thêm cột `g_T`, `G_KL`, `auc_gap` (MIA tổng thể, proxy yếu) và `gapavg` (GapAvg §19.2: trung bình |lệch so với retrain| của FA, RA, TA, AUC, đơn vị điểm %; `gapavg_ta_mia` chỉ lấy TA và MIA). R1-rollback không có gapavg vì θ_pre không đo RA và MIA. Các chỉ số này chỉ để báo cáo, luật dừng không dùng.
 - Chưa chạy trên CIFAR-10 thật với cấu hình mới, nên chưa biết: θ_pre có đạt 90% không, cổng "F đã được học" đạt ở w_F nào, Cổng 1 (e_pre/nu) ra bao nhiêu, và thời gian chạy thật.
 - Ước tính compute trong kịch bản (10-15 giờ GPU cho Phase 1) chưa đo; nên chạy từng seed trong session riêng.
 - Tiền đề "loss trước khi học F ~ loss của oracle" là giả thuyết cần đo bằng Cổng 1, không phải điều đã biết.

@@ -441,6 +441,16 @@ def test_report_compares_with_retrain(tmp_path):
         assert m in c.columns and m + "_iqr" in c.columns
     r7 = c[c.rule == "R7-PRE-J"].iloc[0]
     assert abs(r7["gap_A_T"] - (r7["A_T"] - c[c.rule.str.startswith("RETRAIN")].iloc[0]["A_T"])) < 1e-9
+    # GapAvg (§19.2): trung bình |lệch| của FA, RA, TA, AUC(MIA) so với retrain, đơn vị điểm %
+    d = pd.read_csv(paths.results / "summary_runs.csv")
+    for m in ("g_T", "G_KL", "auc_gap", "gapavg", "gapavg_ta_mia"):
+        assert m in c.columns and m + "_iqr" in c.columns
+    r = d[(d.rule == "R7-PRE-J") & (d.target == "none")].iloc[0]
+    want = 100 * np.mean([abs(r["gap_A_F"]), abs(r["gap_A_R"]), abs(r["gap_A_T"]), r["auc_gap"]])
+    assert abs(r["gapavg"] - want) < 1e-9
+    assert abs(r["gapavg_ta_mia"] - 100 * np.mean([abs(r["gap_A_T"]), r["auc_gap"]])) < 1e-9
+    assert np.isnan(c[c.rule == "R1-rollback"].iloc[0]["gapavg"])      # θ_pre thiếu RA và MIA
+
 
 
 def test_missing_pre_is_reported_clearly(tmp_path):
