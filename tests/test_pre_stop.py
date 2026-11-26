@@ -450,6 +450,28 @@ def test_report_compares_with_retrain(tmp_path):
     assert abs(r["gapavg"] - want) < 1e-9
     assert abs(r["gapavg_ta_mia"] - 100 * np.mean([abs(r["gap_A_T"]), r["auc_gap"]])) < 1e-9
     assert np.isnan(c[c.rule == "R1-rollback"].iloc[0]["gapavg"])      # θ_pre thiếu RA và MIA
+    assert np.isnan(c[c.rule == "R1-rollback"].iloc[0]["G_KL"])        # θ_pre không lưu logits, không được lấy giá trị của R0
+    assert "5b. Độ phủ của rào" in txt and {"n_adm_after0", "n_snap_after0"} <= set(d.columns)
+
+
+def test_gate_coverage_detects_fully_blocked_trajectory():
+    """k=0 luôn qua rào nên no_admissible không bật; n_adm_after0 = 0 mới cho biết mọi điểm unlearn đều bị rào chặn."""
+    import pandas as pd
+    from pre_stop import analyze as A
+    ctx = R.Ctx(np.ones(3), L_R0=0.007, L_V0=0.2)
+    sn0 = {"L_R": 0.007, "L_V": 0.2}
+    assert ctx.admissible(sn0)
+    blocked = {"L_R": 0.003, "L_V": 0.23}              # L_V > 1,10 * 0,2 = 0,22
+    ok = {"L_R": 0.003, "L_V": 0.21}
+    traj = [sn0, blocked, blocked, ok]
+    assert sum(ctx.admissible(sn) for sn in traj[1:]) == 1
+    rows = []
+    for seed, nadm in ((0, 0), (1, 5)):
+        for rule in ("R7-PRE-J", "R6-PRE-hit"):
+            rows.append({"seed": seed, "ftype": "random-450", "method": "scrub", "u": 0, "rule": rule,
+                         "n_adm_after0": nadm, "n_snap_after0": 15, "pick_k0": int(nadm == 0)})
+    g = A.gate_coverage(pd.DataFrame(rows)).iloc[0]
+    assert g["adm"] == "0/5" and g["of"] == "15/15" and g["seeds_adm0"] == 1 and g["pct_PRE_online_k0"] == 50.0
 
 
 

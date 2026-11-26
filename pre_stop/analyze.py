@@ -84,6 +84,10 @@ def analyze_run(cfg: Cfg, paths, seed, ftype, method, u=0) -> list[dict]:
                             for m in range(orc.M)]))
     nF, nV, nR = len(traj[0]["loss_F"]), z["loss_V"].shape[1], 5000
     orc_m = oracle_metrics(orc)
+    # số snapshot k>=1 qua rào G_R và G_V (rào chỉ phụ thuộc L_R(0), L_V(0), không phụ thuộc đích). k=0 luôn qua rào nên cờ
+    # no_admissible không bao giờ bật khi luật rơi về k=0; chỉ số này mới cho biết luật có điểm unlearn nào để chọn hay không.
+    gate_ctx = R.Ctx(np.ones(nF), L_R0, L_V0)
+    n_adm_after0 = int(sum(gate_ctx.admissible(sn) for sn in traj[1:]))
     recs = []
 
     def add(rule, target, res, extra=None):
@@ -92,6 +96,7 @@ def analyze_run(cfg: Cfg, paths, seed, ftype, method, u=0) -> list[dict]:
                "k": k, "epoch": traj[k]["epoch"], "decided_at_epoch": traj[res["decided_at"]]["epoch"],
                "pick_k0": int(k == 0), "triggered": int(res["triggered"]),
                "no_admissible": int(res["no_admissible"]), "flag_no_util_k_star": int(flag_noutil),
+               "n_adm_after0": n_adm_after0, "n_snap_after0": n - 1,
                "d_hat": d_hat[k], "d_hat_k_star": d_hat[k_star], "k_star": k_star,
                "epoch_star": traj[k_star]["epoch"], "regret": d_hat[k] - d_hat[k_star],
                "delta0": d_hat[0] - d_hat[k], "g_T": g_T[k], "G_KL": kl[k],
@@ -322,6 +327,21 @@ def analyze_all(cfg: Cfg, paths, seeds, ftypes, methods, us=(0,), log=print) -> 
     return {"df": df, "gate": gate, "summary": summ, "criteria": crit, "reject": rej}
 
 
+def gate_coverage(df: pd.DataFrame) -> pd.DataFrame:
+    """Mỗi (ftype, method): số snapshot k ≥ 1 qua rào theo từng seed, số seed có adm = 0, và tỉ lệ luật PRE online chọn k=0."""
+    runs = df.drop_duplicates(["seed", "ftype", "method", "u"])
+    rows = []
+    for (ft, me), g in runs.groupby(["ftype", "method"], sort=False):
+        g = g.sort_values("seed")
+        pre = df[(df.ftype == ft) & (df.method == me) & df.rule.isin(PRE_ONLINE)]
+        rows.append({"ftype": ft, "method": me, "seeds": len(g),
+                     "adm": "/".join(f"{int(a)}" for a in g.n_adm_after0),
+                     "of": "/".join(f"{int(a)}" for a in g.n_snap_after0),
+                     "seeds_adm0": int((g.n_adm_after0 == 0).sum()),
+                     "pct_PRE_online_k0": 100.0 * float(pre.pick_k0.mean()) if len(pre) else float("nan")})
+    return pd.DataFrame(rows)
+
+
 def _md(df: pd.DataFrame, floatfmt="{:.3g}") -> str:
     if df.empty:
         return "_(trống)_"
@@ -358,8 +378,14 @@ def write_report(paths, cfg, gate, summ, crit, rej, st, df):
     L += ["## 3. Tiêu chí thành công §12.1 (báo đủ các biến thể, không chọn biến thể tốt nhất sau khi xem)\n",
           _md(crit), "", "## 4. Điều kiện bác bỏ §12.2\n", "```json\n" + json.dumps(rej, indent=2) + "\n```", "",
           "## 5. Kiểm định dấu (R7 so với baseline)\n", _md(pd.DataFrame(st)), "",
+          "## 5b. Độ phủ của rào G_R và G_V (số snapshot k ≥ 1 được chấp nhận)\n",
+          "Cờ `no_admissible` không bật khi luật rơi về k=0, vì k=0 luôn qua rào. Cột `adm` cho biết luật có điểm unlearn nào để chọn: "
+          "`adm = 0` nghĩa là mọi luật online buộc phải chọn k=0 dù quỹ đạo có điểm tốt, nên kết quả k=0 ở ô đó "
+          "không đánh giá luật PRE. Rào là hằng số [FIXED], không phụ thuộc đích.\n",
+          _md(gate_coverage(df)), "",
           "## 6. Cảnh báo pipeline\n",
-          f"- Số lần cờ no_admissible: {int(df.no_admissible.sum())}; cờ k* không có k thoả utility: "
+          f"- Số lần cờ no_admissible: {int(df.no_admissible.sum())} (không phát hiện được trường hợp mọi snapshot k ≥ 1 bị rào chặn, xem mục 5b); "
+          f"cờ k* không có k thoả utility: "
           f"{int(df.groupby(['seed', 'ftype', 'method', 'u']).flag_no_util_k_star.max().sum())}",
           "- R13 (MU-Mis) chưa cài (cần gradient theo mẫu); R14 và R15 dùng oracle, chỉ để đo trần, không tuyên bố.",
           "- R11 dùng Err_V khớp histogram lớp của F tại snapshot cuối; R10 chuẩn hoá theo giá trị lớn nhất trên quỹ đạo (offline).",
