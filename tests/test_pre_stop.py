@@ -307,7 +307,8 @@ def test_lr_grid_scales_lr_and_keeps_original_schedule():
 def test_lr_grid_method_names():
     from pre_stop.unlearn import applicable, n_epochs_for, split_method
     assert split_method("ga") == ("ga", 1.0) and split_method("scrub@0.01") == ("scrub", 0.01)
-    for bad in ("salun@0.1", "tarun@0.1", "ft@0.1", "xx"):
+    assert split_method("ft@0.1") == ("ft", 0.1)                        # ft có lưới lr (chỉ random-450)
+    for bad in ("salun@0.1", "tarun@0.1", "xx"):
         with pytest.raises(ValueError):
             split_method(bad)
     assert applicable("scrub@0.1", "class-0") and n_epochs_for(get_cfg("kaggle"), "ga@0.1") is None
@@ -337,6 +338,16 @@ def test_plateau_is_opt_in_and_not_an_epoch_cap():
     assert get_cfg("kaggle").plateau_w is None            # mặc định TẮT
 
 
+def test_plateau_does_not_stop_while_small_L_F_still_moving():
+    """Lỗi cũ: sàn 0.1 cho L_F nên L_F 0.0075 -> 0.011 (chưa quên, đang tăng) bị coi là ổn định. Có s thì không dừng."""
+    from pre_stop.unlearn import plateau
+    rows = [{"L_F": 0.0075 + 0.0004 * i, "L_R": 0.007, "L_V": 0.2} for i in range(10)]
+    assert plateau(rows, 10, 0.05)                              # không biết s: giữ hành vi cũ
+    assert not plateau(rows, 10, 0.05, s=0.3)                   # s = 0.3: L_F tăng ~40% giữa hai nửa, chưa ổn định
+    flat = [{"L_F": 0.30 + (0.003 if i % 2 else -0.003), "L_R": 0.007, "L_V": 0.2} for i in range(10)]
+    assert plateau(flat, 10, 0.05, s=0.3)                       # đã ổn định ở mức s thì vẫn dừng
+
+
 def test_lr_grid_trajectory_runs_and_reports_separately(tmp_path):
     """ga@0.1 chạy trên cùng θ0, ghi báo cáo vào results_<tag>/, không đụng results/. Pipeline riêng (không dùng chung
     mini_run vì một test khác cố ý sửa P trong đó)."""
@@ -352,6 +363,19 @@ def test_lr_grid_trajectory_runs_and_reports_separately(tmp_path):
     rep = Paths(out, results="results_lrgrid_test").results
     assert (rep / "report_auto.md").exists() and (rep / "compare_retrain.csv").exists()
     assert not (Paths(out).results / "report_auto.md").exists()          # báo cáo chính không bị ghi đè
+    import pandas as pd
+    sel = pd.read_csv(rep / "lr_selection.csv")
+    assert {"ft@0.1", "ga@0.1", "scrub@0.1"} <= set(sel.method)          # ft cũng có lưới lr
+    assert "5c. Chọn lr" in (rep / "report_auto.md").read_text(encoding="utf-8")
+    assert (sel.groupby(["ftype", "base"]).chosen.sum() <= 1).all()      # tối đa một lr được chọn cho mỗi phương pháp
+
+
+def test_lr_selection_uses_only_trajectory_and_P(tmp_path):
+    """Chọn lr lớn nhất trong các điểm mà ở MỌI seed có snapshot k>=1 qua rào và L_F >= s_P; không đọc oracle."""
+    import inspect
+    from pre_stop import analyze as A
+    src = inspect.getsource(A.lr_selection)
+    assert "Oracle" not in src and "oracle" not in src.split('"""')[2] and "read_test" not in src
 
 def test_plateau_stops_a_trajectory_that_never_decides(tmp_path):
     """Quỹ đạo mà luật PRE không bao giờ quyết định (F không quên) phải dừng nhờ --plateau_w, không chạy mãi."""
@@ -449,8 +473,21 @@ def test_report_compares_with_retrain(tmp_path):
     want = 100 * np.mean([abs(r["gap_A_F"]), abs(r["gap_A_R"]), abs(r["gap_A_T"]), r["auc_gap"]])
     assert abs(r["gapavg"] - want) < 1e-9
     assert abs(r["gapavg_ta_mia"] - 100 * np.mean([abs(r["gap_A_T"]), r["auc_gap"]])) < 1e-9
-    assert np.isnan(c[c.rule == "R1-rollback"].iloc[0]["gapavg"])      # θ_pre thiếu RA và MIA
-    assert np.isnan(c[c.rule == "R1-rollback"].iloc[0]["G_KL"])        # θ_pre không lưu logits, không được lấy giá trị của R0
+    assert np.isnan(c[c.rule == "R1-rollback"].iloc[0]["gapavg"])      # chưa chạy prefull: thiếu RA và MIA
+    assert np.isnan(c[c.rule == "R1-rollback"].iloc[0]["G_KL"])        # không được lấy giá trị của R0
+    # sau `prefull`: R1 có đủ chỉ số, P không bị đổi
+    P_before = paths.P_json(0, "random-450").read_text(encoding="utf-8")
+    assert main(["prefull"] + common) == 0 and paths.pre_full(0, "random-450").exists()
+    assert paths.P_json(0, "random-450").read_text(encoding="utf-8") == P_before
+    A.analyze_all(cfg, paths, [0], ["random-450"], ["ga"])
+    d2 = pd.read_csv(paths.results / "summary_runs.csv")
+    r1 = d2[d2.rule == "R1-rollback"].iloc[0]
+    for m in ("L_R", "A_R", "A_V", "G_KL", "auc_gap", "gapavg"):
+        assert np.isfinite(r1[m]), m
+    z = np.load(paths.pre_full(0, "random-450"))
+    assert abs(r1["L_F"] - float(z["L_F"])) < 1e-4                      # đo lại khớp P (cùng θ_pre, cùng F)
+    want1 = 100 * np.mean([abs(r1["gap_A_F"]), abs(r1["gap_A_R"]), abs(r1["gap_A_T"]), r1["auc_gap"]])
+    assert abs(r1["gapavg"] - want1) < 1e-9
     assert "5b. Độ phủ của rào" in txt and {"n_adm_after0", "n_snap_after0"} <= set(d.columns)
 
 

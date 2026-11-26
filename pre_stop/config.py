@@ -99,6 +99,7 @@ class Paths:
     def forget(self, s, ft): return self._p("data", f"forget_{ft}_seed{s}.json")
     def P_json(self, s, ft): return self._p("data", f"P_{ft}_seed{s}.json")
     def P_loss(self, s, ft): return self._p("data", f"P_{ft}_seed{s}_loss.npy")
+    def pre_full(self, s, ft): return self._p("data", f"prefull_{ft}_seed{s}.npz")    # đo đầy đủ θ_pre (chỉ để báo cáo R1), không phải P
     def P_log(self, s, ft): return self._p("data", f"Plog_{ft}_seed{s}.npy")
     def theta0(self, s, ft): return self._p("ckpt", "theta0", f"{ft}_seed{s}.pth")
     def stage2_stats(self, s, ft): return self._p("data", f"stage2_{ft}_seed{s}.json")

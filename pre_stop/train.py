@@ -201,6 +201,22 @@ def prepare_seed(cfg: Cfg, paths, data, seed: int, device, log=print, force: boo
                          "không tự đổi công thức.")
 
 
+def measure_pre_full(cfg: Cfg, paths, data, seed: int, ftype: str, device, log=print, force: bool = False):
+    """Đo ĐẦY ĐỦ θ_pre (L/A trên F, R_sub, V, test; logits F và V) để dòng R1-rollback so được với retrain ở mọi chỉ số.
+    Chỉ để BÁO CÁO: không đụng P (P đã đóng băng, hash), không dùng trong luật. Cần F đã chọn (lệnh cfg) nhưng KHÔNG cần
+    giai đoạn 2 hay oracle, nên chạy bù được cho kết quả cũ."""
+    from .data import load_sets
+    out = paths.pre_full(seed, ftype)
+    if out.exists() and not force:
+        log(f"[prefull] {ftype} seed {seed} đã xong, bỏ qua")
+        return
+    mpre = make_model(cfg.as_profile(), device)
+    mpre.load_state_dict(torch.load(paths.pre_ckpt(seed), map_location=device))
+    mpre.eval()
+    save_oracle(out, mpre, data, cfg, load_sets(paths, data, cfg, seed, ftype))      # cùng định dạng file với oracle
+    log(f"[prefull] {ftype} seed {seed}: đã đo θ_pre đầy đủ -> {out.name}")
+
+
 def prepare_config(cfg: Cfg, paths, data, seed: int, ftype: str, device, log=print, force: bool = False):
     """F, P (đóng băng), giai đoạn 2 (θ0, cổng w_F) và M oracle θ_R2 cho một (seed, ftype)."""
     done = (paths.theta0(seed, ftype).exists() and paths.stage2_stats(seed, ftype).exists()

@@ -40,7 +40,7 @@ BN_MODE = {"ga": "train", "ft": "train", "salun": "train", "scrub": "train (stud
            "tarun": "train (noise: eval)"}
 
 
-LR_GRID_METHODS = ("ga", "scrub")       # chỉ hai phương pháp này có lưới lr (EXPLORATORY), tên dạng "ga@0.1"
+LR_GRID_METHODS = ("ga", "scrub", "ft")  # chỉ các phương pháp này có lưới lr (EXPLORATORY), tên dạng "ga@0.1"
 
 
 def split_method(name: str) -> tuple[str, float]:
@@ -65,19 +65,27 @@ def n_epochs_for(cfg: Cfg, method: str) -> int | None:
     return cfg.n_epochs or cfg.max_epochs
 
 
-def plateau(rows: list[dict], w: int, tol: float) -> bool:
+PLATEAU_VERSION = 2      # 1: sàn L_F cố định 0.1 (dừng nhầm khi L_F còn rất nhỏ); 2: sàn L_F = min(0.1, 0.1*s)
+
+
+def plateau(rows: list[dict], w: int, tol: float, s: float | None = None) -> bool:
     """Quỹ đạo đã tới "vùng ổn định": chia w epoch gần nhất làm hai nửa; trung bình nửa sau so với nửa trước của L_F, L_R,
-    L_V đều đổi <= tol * max(|trung bình|, 0.1). Dùng trung bình nửa cửa sổ nên không bị nhiễu epoch-to-epoch (vài %)
+    L_V đều đổi <= tol * max(|trung bình|, sàn). Dùng trung bình nửa cửa sổ nên không bị nhiễu epoch-to-epoch (vài %)
     làm hỏng (tiêu chí max-min cũ không bao giờ thoả khi L_F dao động ±3%). KHÔNG phải trần epoch; không dùng oracle/test.
-    Do người triển khai đề xuất: dừng khi đã tới vùng loss ổn định, không tối ưu thêm."""
+    Do người triển khai đề xuất: dừng khi đã tới vùng loss ổn định, không tối ưu thêm.
+
+    Sàn của L_R, L_V là 0.1. Sàn của L_F là min(0.1, 0.1*s) với s = thang đích của luật PRE (từ P, không phải oracle): bản đầu
+    dùng sàn 0.1 cho cả L_F nên khi L_F còn rất nhỏ (vd. 0.0075 -> 0.011, chưa quên) mọi thay đổi đều < tol*0.1 = 0.005 và
+    quỹ đạo bị coi là ổn định dù F chưa được quên. Sàn theo s buộc L_F phải thật sự đứng yên tương đối so với mức đích."""
     if w is None or len(rows) < w:
         return False
     last = rows[-w:]
     h = w // 2
-    for k in ("L_F", "L_R", "L_V"):
+    floors = {"L_F": 0.1 if s is None else min(0.1, 0.1 * s), "L_R": 0.1, "L_V": 0.1}
+    for k, floor in floors.items():
         v = np.array([r[k] for r in last], dtype=np.float64)
         a, b = v[:h].mean(), v[h:].mean()
-        if abs(b - a) > tol * max(abs((a + b) / 2), 0.1):
+        if abs(b - a) > tol * max(abs((a + b) / 2), floor):
             return False
     return True
 
@@ -163,9 +171,9 @@ class GA(Base):
 class FT(Base):
     name = "ft"
 
-    def __init__(self, *a):
+    def __init__(self, *a, lr_scale: float = 1.0):
         super().__init__(*a)
-        self.opt = _sgd(self.model, 0.01, 5e-4)
+        self.opt = _sgd(self.model, 0.01 * lr_scale, 5e-4)       # lr_scale != 1: lưới lr EXPLORATORY (FT gốc lr không đổi)
 
     def epoch(self) -> float:
         self.model.train()
@@ -370,10 +378,13 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
     jl, arr_p, meta_p, test_p = paths.traj_jsonl(rid), paths.traj_arrays(rid), paths.meta(rid), paths.traj_test(rid)
     if meta_p.exists() and arr_p.exists() and not force:
         old = json.loads(meta_p.read_text(encoding="utf-8"))
-        if "stop_reason" in old and old.get("optimizer", "") == getattr(METHOD_CLS[split_method(method)[0]], "OPT_NAME", ""):
+        stale_plateau = old.get("stop_reason") == "plateau" and old.get("plateau_version") != PLATEAU_VERSION
+        if ("stop_reason" in old and not stale_plateau
+                and old.get("optimizer", "") == getattr(METHOD_CLS[split_method(method)[0]], "OPT_NAME", "")):
             log(f"[traj] {rid} đã xong, bỏ qua")
             return old
-        log(f"[traj] {rid} là quỹ đạo kiểu cũ (không có stop_reason hoặc optimizer khác hiện tại, vd. scrub Adam): chạy lại")
+        log(f"[traj] {rid} là quỹ đạo kiểu cũ (không có stop_reason, optimizer khác hiện tại vd. scrub Adam, "
+            f"hoặc dừng bằng tiêu chí plateau bản cũ có sàn L_F=0.1): chạy lại")
     sets = load_sets(paths, data, cfg, seed, ftype)
     seed_all(seed + 1000 * u)
     model = _load_theta0(cfg, paths, seed, ftype, device)
@@ -449,7 +460,7 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
                 stop_reason = "all_rules_decided"
                 log(f"[traj] {rid} mọi luật PRE online đã quyết định ở epoch {ep}: dừng quỹ đạo")
                 break
-            if cfg.plateau_w and plateau(rows, cfg.plateau_w, cfg.plateau_tol):
+            if cfg.plateau_w and plateau(rows, cfg.plateau_w, cfg.plateau_tol, min(r.ctx.s for r in stop_rules)):
                 stop_reason = "plateau"
                 log(f"[traj] {rid} quỹ đạo đã tới vùng ổn định (cửa sổ {cfg.plateau_w} epoch, tol {cfg.plateau_tol}) ở epoch {ep}: dừng "
                     f"({len(pending)}/{len(stop_rules)} luật chưa quyết định)")
@@ -463,6 +474,6 @@ def collect(cfg: Cfg, paths, data, method: str, ftype: str, seed: int, device, u
     meta = {"run_id": rid, "method": method, "base_method": base, "lr_scale": scale, "ftype": ftype, "seed": seed, "u": u, "n_epochs": ep if stop_reason != "diverged" else ep - 1,
             "max_epochs": n_ep, "stop_reason": stop_reason, "n_rules_undecided": len(pending),
             "n_snapshots": len(arrays["epochs"]), "n_updates": um.n_updates, "diverged": diverged,
-            "wall_s": time.time() - t0, "arrays": arr_p.name, "bn_mode": BN_MODE[base], "optimizer": getattr(METHOD_CLS[base], "OPT_NAME", "")}
+            "plateau_version": PLATEAU_VERSION, "wall_s": time.time() - t0, "arrays": arr_p.name, "bn_mode": BN_MODE[base], "optimizer": getattr(METHOD_CLS[base], "OPT_NAME", "")}
     meta_p.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta

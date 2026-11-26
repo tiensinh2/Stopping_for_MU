@@ -12,13 +12,13 @@ from ralm.data import Data
 
 from . import analyze as A
 from .config import FTYPES, MAIN_FTYPE, METHODS, GATE1_RATIO, Paths, get_cfg
-from .train import check_stage1, prepare_config, prepare_seed, require_pre
+from .train import check_stage1, measure_pre_full, prepare_config, prepare_seed, require_pre
 from .unlearn import LR_GRID_METHODS, applicable, collect
 
 
 def _args(argv=None):
     p = argparse.ArgumentParser()
-    p.add_argument("cmd", choices=["pre", "cfg", "gate1", "traj", "analyze", "all"])
+    p.add_argument("cmd", choices=["pre", "cfg", "prefull", "gate1", "traj", "analyze", "all"])
     p.add_argument("--profile", default="kaggle")
     p.add_argument("--out", default="./pre_out")
     p.add_argument("--data_root", default=None)
@@ -52,7 +52,7 @@ def main(argv=None):
             a.tag = "lrgrid"
     paths = Paths(a.out, results="results" + (f"_{a.tag}" if a.tag else ""))
     check_stage1(cfg, paths, a.seeds)
-    if a.cmd in ("cfg", "gate1", "traj"):
+    if a.cmd in ("cfg", "prefull", "gate1", "traj"):
         require_pre(paths, a.seeds)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[run] {a.cmd} profile={cfg.name} device={device} seeds={a.seeds} ftypes={a.ftypes} methods={a.methods}")
@@ -65,6 +65,10 @@ def main(argv=None):
         for s in a.seeds:
             for ft in a.ftypes:
                 prepare_config(cfg, paths, data, s, ft, device, force=a.force)
+    if a.cmd in ("prefull", "all"):
+        for s in a.seeds:
+            for ft in a.ftypes:
+                measure_pre_full(cfg, paths, data, s, ft, device, force=a.force)
     if a.cmd in ("gate1", "all"):
         ok = gate1(cfg, paths, data, a, device)
         if not ok:      # chỉ cảnh báo, không chặn: kết quả vẫn chạy và được báo cáo cùng e_pre/ν

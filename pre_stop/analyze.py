@@ -121,15 +121,25 @@ def analyze_run(cfg: Cfg, paths, seed, ftype, method, u=0) -> list[dict]:
     add("R0-do-nothing", "-", R.r0_do_nothing(traj))
     # R1 rollback: không phải luật trên quỹ đạo; k_star/regret tính cùng thang để so sánh
     rb = {"k": 0, "decided_at": 0, "triggered": True, "no_admissible": False}
-    # rollback = chính θ_pre: chỉ có các chỉ số đã đo trên θ_pre (F, V, test); R_sub không đo nên để NaN
+    # rollback = chính θ_pre. Nếu đã chạy `prefull` thì có đủ L/A trên F, R_sub, V, test và logits -> G_KL, auc_gap, gapavg;
+    # nếu chưa thì các chỉ số đó là NaN (không lấy nhầm giá trị của R0).
     nan = float("nan")
-    add("R1-rollback", "-", rb, {"d_hat": orc.d_hat(P["loss_F_pre"]), "g_T": orc.g_T(pre["A_T_pre"]),
-                                  "regret": orc.d_hat(P["loss_F_pre"]) - d_hat[k_star], "delta0": d_hat[0] - orc.d_hat(P["loss_F_pre"]),
-                                  "epoch": -1, "k": -1, "pick_k0": 0,
-                                  "L_F": P["L_F_pre"], "A_F": P["A_F_pre"], "L_V": P["L_V_pre"], "A_V": nan,
-                                  "L_R": nan, "A_R": nan, "A_T": pre["A_T_pre"], "L_T": pre["L_T_pre"],
-                                  "gapavg": nan, "gapavg_ta_mia": nan,    # thiếu RA và MIA của θ_pre
-                                  "G_KL": nan, "auc_gap": nan})           # không lưu logits của θ_pre (trước đây lấy nhầm giá trị của R0)
+    r1 = {"d_hat": orc.d_hat(P["loss_F_pre"]), "g_T": orc.g_T(pre["A_T_pre"]),
+          "regret": orc.d_hat(P["loss_F_pre"]) - d_hat[k_star], "delta0": d_hat[0] - orc.d_hat(P["loss_F_pre"]),
+          "epoch": -1, "k": -1, "pick_k0": 0,
+          "L_F": P["L_F_pre"], "A_F": P["A_F_pre"], "L_V": P["L_V_pre"], "A_V": nan,
+          "L_R": nan, "A_R": nan, "A_T": pre["A_T_pre"], "L_T": pre["L_T_pre"],
+          "gapavg": nan, "gapavg_ta_mia": nan, "G_KL": nan, "auc_gap": nan}
+    pf = paths.pre_full(seed, ftype)
+    if pf.exists():
+        zp = np.load(pf)
+        r1.update({m: float(zp[m]) for m in ("L_R", "A_R", "A_V")})
+        r1["G_KL"] = orc.g_kl(zp["logits_F"])
+        r1["auc_gap"] = abs(auc_conf(conf_of(zp["logits_F"]), conf_of(zp["logits_V"].astype(np.float64))) - auc_or)
+        d_ = [abs(r1["A_F"] - orc_m["A_F"]), abs(r1["A_R"] - orc_m["A_R"]), abs(r1["A_T"] - orc_m["A_T"]), r1["auc_gap"]]
+        r1["gapavg"] = 100.0 * float(np.mean(d_))
+        r1["gapavg_ta_mia"] = 100.0 * float(np.mean(d_[2:]))
+    add("R1-rollback", "-", rb, r1)
     for K in cfg.fixed_k:
         add(f"R2-fixed-{K}", "-", R.r2_fixed(traj, K))
     ctx0 = R.Ctx(R.make_target(P, "none", L_V0), L_R0, L_V0)
@@ -323,8 +333,49 @@ def analyze_all(cfg: Cfg, paths, seeds, ftypes, methods, us=(0,), log=print) -> 
     st = [sign_test(df, "R7-PRE-J", b) for b in ("R0-do-nothing", "R3-retain-only", "R4-val-only", "R5-heldout-hit")
           if (df.rule == "R7-PRE-J").any()]
     (paths.results / "curves.json").write_text(json.dumps(curves), encoding="utf-8")
-    write_report(paths, cfg, gate, summ, crit, rej, st, df)
+    lrsel = lr_selection(paths, seeds, ftypes, methods, us)
+    lrsel.to_csv(paths.results / "lr_selection.csv", index=False)
+    write_report(paths, cfg, gate, summ, crit, rej, st, df, lrsel)
     return {"df": df, "gate": gate, "summary": summ, "criteria": crit, "reject": rej}
+
+
+def lr_selection(paths, seeds, ftypes, methods, us=(0,)) -> pd.DataFrame:
+    """Chọn lr KHÔNG dùng oracle, test hay khoảng cách tới retrain (đăng ký trước khi chạy lưới).
+
+    Một điểm lưới (method@s) ĐỦ ĐIỀU KIỆN ở một loại F nếu ở MỌI seed tồn tại snapshot k ≥ 1 vừa qua rào G_R, G_V, vừa có
+    L_F ≥ s_P, với s_P = trung bình đích P (loss của θ_pre trên F, chế độ none). Nghĩa là: quỹ đạo có điểm F đã quên tới mức P
+    mà không làm hỏng R, V. Trong các điểm đủ điều kiện chọn lr LỚN NHẤT (ít epoch nhất). Không có điểm nào đủ thì không chọn.
+    Chỉ đọc quỹ đạo và P; đây là bước chọn siêu tham số, kết quả lr vẫn phải ghi nhãn đã chọn bằng tiêu chí này."""
+    rows = []
+    for ft in ftypes:
+        for me in methods:
+            base, _, sc = me.partition("@")
+            hits, n_adm, ok_all, found = [], [], True, 0
+            for s in seeds:
+                for u in us:
+                    try:
+                        tr = R.load_traj(paths, paths.run_id(me, ft, s, u))
+                        P = load_P(paths, s, ft)
+                    except FileNotFoundError:
+                        ok_all = False
+                        continue
+                    found += 1
+                    ctx = R.Ctx(np.asarray(P["loss_F_pre"], dtype=np.float64), tr[0]["L_R"], tr[0]["L_V"])
+                    adm = [sn for sn in tr[1:] if ctx.admissible(sn)]
+                    n_adm.append(len(adm))
+                    hits.append(any(sn["L_F"] >= ctx.s for sn in adm))
+            if not found:
+                continue
+            rows.append({"ftype": ft, "method": me, "base": base, "scale": float(sc) if sc else 1.0, "runs": found,
+                         "adm": "/".join(map(str, n_adm)), "runs_hit_sP": int(sum(hits)),
+                         "eligible": bool(ok_all and all(hits))})
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out["chosen"] = False
+    for (_, _), g in out[out.eligible].groupby(["ftype", "base"]):
+        out.loc[g.scale.idxmax(), "chosen"] = True
+    return out
 
 
 def gate_coverage(df: pd.DataFrame) -> pd.DataFrame:
@@ -353,7 +404,7 @@ def _md(df: pd.DataFrame, floatfmt="{:.3g}") -> str:
     return "\n".join(out)
 
 
-def write_report(paths, cfg, gate, summ, crit, rej, st, df):
+def write_report(paths, cfg, gate, summ, crit, rej, st, df, lrsel=None):
     L = ["# Báo cáo PRE-stop (tự sinh)\n",
          f"- Seed: {sorted(df.seed.unique().tolist())}; loại F: {sorted(df.ftype.unique().tolist())}; "
          f"phương pháp: {sorted(df.method.unique().tolist())}; số dòng (run×luật): {len(df)}",
@@ -368,9 +419,10 @@ def write_report(paths, cfg, gate, summ, crit, rej, st, df):
           "F = forget set, R = retain (R_sub 5000 mẫu), V = validation, T = test. "
           "Cột phụ: g_T = |A_T − A_T(retrain)| (điểm %), G_KL = KL(softmax oracle ‖ mô hình) trên F, "
           "auc_gap = |AUC MIA(F vs V, max-softmax) − AUC của oracle|, gapavg = trung bình |lệch| của FA, RA, TA, AUC (điểm %); "
-          "dòng R1-rollback không có gapavg (thiếu RA, MIA). MIA tổng thể là chỉ báo yếu, đọc kèm g_T và G_KL. "
+          "MIA tổng thể là chỉ báo yếu, đọc kèm g_T và G_KL. "
           "Bản đầy đủ kèm IQR và chênh lệch có dấu `gap_*` nằm ở `results/compare_retrain.csv`. "
-          "R1-rollback chính là θ_pre nên không có L_R, A_R, A_V (không đo).\n"]
+          "R1-rollback chính là θ_pre: L_R, A_R, A_V, G_KL, auc_gap, gapavg chỉ có khi đã chạy lệnh `prefull` "
+          "(không thì NaN).\n"]
     cmp_ = compare_retrain(df)
     show = ["rule", "target", "n"] + list(CMP) + ["g_T", "G_KL", "auc_gap", "gapavg"]
     for (ft, me), g in cmp_.groupby(["ftype", "method"], sort=False):
@@ -383,6 +435,11 @@ def write_report(paths, cfg, gate, summ, crit, rej, st, df):
           "`adm = 0` nghĩa là mọi luật online buộc phải chọn k=0 dù quỹ đạo có điểm tốt, nên kết quả k=0 ở ô đó "
           "không đánh giá luật PRE. Rào là hằng số [FIXED], không phụ thuộc đích.\n",
           _md(gate_coverage(df)), "",
+          "## 5c. Chọn lr không dùng oracle (chỉ có ý nghĩa khi chạy lưới lr)\n",
+          "Điểm lưới đủ điều kiện nếu ở MỌI seed có snapshot k ≥ 1 qua rào G_R, G_V và có L_F ≥ s_P (F đã quên tới mức loss của θ_pre). "
+          "Chọn lr lớn nhất trong các điểm đủ điều kiện. Tiêu chí chỉ đọc quỹ đạo và P, không đọc oracle, test hay khoảng cách tới retrain. "
+          "`adm` = số snapshot k ≥ 1 qua rào theo từng seed; `runs_hit_sP` = số seed có snapshot như vậy.\n",
+          _md(lrsel if lrsel is not None else pd.DataFrame()), "",
           "## 6. Cảnh báo pipeline\n",
           f"- Số lần cờ no_admissible: {int(df.no_admissible.sum())} (không phát hiện được trường hợp mọi snapshot k ≥ 1 bị rào chặn, xem mục 5b); "
           f"cờ k* không có k thoả utility: "
