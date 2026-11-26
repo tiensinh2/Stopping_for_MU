@@ -123,7 +123,8 @@ def analyze_run(cfg: Cfg, paths, seed, ftype, method, u=0) -> list[dict]:
                                   "epoch": -1, "k": -1, "pick_k0": 0,
                                   "L_F": P["L_F_pre"], "A_F": P["A_F_pre"], "L_V": P["L_V_pre"], "A_V": nan,
                                   "L_R": nan, "A_R": nan, "A_T": pre["A_T_pre"], "L_T": pre["L_T_pre"],
-                                  "gapavg": nan, "gapavg_ta_mia": nan})   # thiếu RA và MIA của θ_pre
+                                  "gapavg": nan, "gapavg_ta_mia": nan,    # thiếu RA và MIA của θ_pre
+                                  "G_KL": nan, "auc_gap": nan})           # không lưu logits của θ_pre (trước đây lấy nhầm giá trị của R0)
     for K in cfg.fixed_k:
         add(f"R2-fixed-{K}", "-", R.r2_fixed(traj, K))
     ctx0 = R.Ctx(R.make_target(P, "none", L_V0), L_R0, L_V0)
