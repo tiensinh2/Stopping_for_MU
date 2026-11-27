@@ -65,7 +65,7 @@ def n_epochs_for(cfg: Cfg, method: str) -> int | None:
     return cfg.n_epochs or cfg.max_epochs
 
 
-PLATEAU_VERSION = 2      # 1: sàn L_F cố định 0.1 (dừng nhầm khi L_F còn rất nhỏ); 2: sàn L_F = min(0.1, 0.1*s)
+PLATEAU_VERSION = 3      # 1: sàn L_F cố định 0.1; 2: sàn L_F = min(0.1, 0.1*s) (vẫn dừng nhầm ở epoch 9 khi lr nhỏ); 3: sàn L_F = min(0.1, 0.01*s)
 
 
 def plateau(rows: list[dict], w: int, tol: float, s: float | None = None) -> bool:
@@ -74,14 +74,16 @@ def plateau(rows: list[dict], w: int, tol: float, s: float | None = None) -> boo
     làm hỏng (tiêu chí max-min cũ không bao giờ thoả khi L_F dao động ±3%). KHÔNG phải trần epoch; không dùng oracle/test.
     Do người triển khai đề xuất: dừng khi đã tới vùng loss ổn định, không tối ưu thêm.
 
-    Sàn của L_R, L_V là 0.1. Sàn của L_F là min(0.1, 0.1*s) với s = thang đích của luật PRE (từ P, không phải oracle): bản đầu
+    Sàn của L_R, L_V là 0.1. Sàn của L_F là min(0.1, 0.01*s) với s = thang đích của luật PRE (từ P, không phải oracle): bản đầu
     dùng sàn 0.1 cho cả L_F nên khi L_F còn rất nhỏ (vd. 0.0075 -> 0.011, chưa quên) mọi thay đổi đều < tol*0.1 = 0.005 và
-    quỹ đạo bị coi là ổn định dù F chưa được quên. Sàn theo s buộc L_F phải thật sự đứng yên tương đối so với mức đích."""
+    quỹ đạo bị coi là ổn định dù F chưa được quên. Bản 2 dùng 0.1*s (~0.03) vẫn quá lớn: với lr nhỏ L_F chỉ trôi 0.0076 -> 0.0087
+    trong 9 epoch, thay đổi < tol*0.03 nên vẫn dừng ở epoch 9 khi F chưa quên. Sàn 0.01*s (~0.003) buộc L_F phải thật sự
+    đứng yên tương đối (so với chính nó khi nó còn nhỏ)."""
     if w is None or len(rows) < w:
         return False
     last = rows[-w:]
     h = w // 2
-    floors = {"L_F": 0.1 if s is None else min(0.1, 0.1 * s), "L_R": 0.1, "L_V": 0.1}
+    floors = {"L_F": 0.1 if s is None else min(0.1, 0.01 * s), "L_R": 0.1, "L_V": 0.1}
     for k, floor in floors.items():
         v = np.array([r[k] for r in last], dtype=np.float64)
         a, b = v[:h].mean(), v[h:].mean()

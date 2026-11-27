@@ -348,6 +348,21 @@ def test_plateau_does_not_stop_while_small_L_F_still_moving():
     assert plateau(flat, 10, 0.05, s=0.3)                       # đã ổn định ở mức s thì vẫn dừng
 
 
+
+def test_plateau_does_not_stop_on_slow_drift_of_unforgotten_F():
+    """Lỗi bản 2 (log Kaggle ga@0.01): epoch 0..9, L_F trôi 0.0076 -> 0.0087 (F chưa quên) vẫn bị dừng ở epoch 9
+    vì sàn 0.1*s ~ 0.03 làm mọi thay đổi < tol*sàn. Sàn 0.01*s thì còn nhận ra L_F đang đi."""
+    from pre_stop.unlearn import plateau
+    lf = [0.0075, 0.0076, 0.0077, 0.0078, 0.0080, 0.0081, 0.0083, 0.0084, 0.0086, 0.0087]      # trôi như ga@0.01
+    rows = [{"L_F": v, "L_R": 0.0085, "L_V": 0.2} for v in lf]
+    assert not plateau(rows, 10, 0.05, s=0.3)
+    assert abs(sum(lf[5:]) / 5 - sum(lf[:5]) / 5) < 0.05 * 0.1 * 0.3       # đúng ngưỡng của bản 2 (sàn 0.1*s) sẽ coi là ổn định
+    flat = [{"L_F": 0.0087, "L_R": 0.0085, "L_V": 0.2}] * 10
+    assert plateau(flat, 10, 0.05, s=0.3)                       # đứng yên thật sự thì vẫn dừng
+
+
+
+
 def test_lr_grid_trajectory_runs_and_reports_separately(tmp_path):
     """ga@0.1 chạy trên cùng θ0, ghi báo cáo vào results_<tag>/, không đụng results/. Pipeline riêng (không dùng chung
     mini_run vì một test khác cố ý sửa P trong đó)."""
